@@ -45,7 +45,7 @@ const cleanColor = (s) => {
   const raw = String(s || '').trim();
   const isNonStock = /\(\s*NON[\s-]?STOCK/i.test(raw);
   const n = raw.replace(/\s*\(.*$/, '').trim() || raw;
-  return isNonStock ? n + '*' : n;
+  return isNonStock ? '*' + n : n;
 };
 
 const toDate = (yyyymmdd) => {
