@@ -170,12 +170,12 @@
   .review-title { font-size: 18px; font-weight: 700; margin: 0; }
 
   .cat-pills { display: flex; gap: 6px; margin: 4px 0 12px; }
-  .cat-pill, .trend-metric-btn, .rank-metric-btn, .rank-cat-btn, .week-avg-btn, .week-cat-btn {
+  .cat-pill, .trend-metric-btn, .rank-metric-btn, .rank-cat-btn, .week-avg-btn, .week-cat-btn, .rank-div-btn, .rank-store-btn, .store-cat-pill, .hotcold-window-btn {
     font-size: 13px; font-weight: 600; padding: 7px 16px; border-radius: 999px;
     border: 1px solid var(--gridline); background: var(--surface-1); color: var(--text-secondary);
     cursor: pointer;
   }
-  .cat-pill.active, .trend-metric-btn.active, .rank-metric-btn.active, .rank-cat-btn.active, .week-avg-btn.active, .week-cat-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cat-pill.active, .trend-metric-btn.active, .rank-metric-btn.active, .rank-cat-btn.active, .week-avg-btn.active, .week-cat-btn.active, .rank-div-btn.active, .rank-store-btn.active, .store-cat-pill.active, .hotcold-window-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .stat-pair { display: flex; gap: 20px; margin-top: 4px; flex-wrap: wrap; }
   .stat-pair .stat { flex: 1; min-width: 140px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
@@ -196,6 +196,12 @@
 
   /* ---- trend chart ---- */
   .chart-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 16px 8px; }
+  .salesperson-chart-link { cursor: pointer; }
+  .salesperson-chart-link:hover .chart-card { border-color: var(--accent); }
+  .view-all-hint { font-size: 11px; text-transform: none; letter-spacing: normal; font-weight: 600; color: var(--accent); float: right; }
+  .review-scroll { max-height: 560px; overflow-y: auto; }
+  .store-bar-row { cursor: pointer; }
+  .store-bar-row:hover { fill: var(--gridline); opacity: 0.5; }
   .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 8px; }
   .chart-legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--text-secondary); }
   .chart-legend .key { display: inline-flex; align-items: center; gap: 6px; }
@@ -291,8 +297,18 @@ const STORE_NAMES = {
   '011': 'Store 011 (closed)', '017': 'Store 017 (closed)',
 };
 const storeLabel = (code) => STORE_NAMES[code] || `Store ${code || '?'}`;
+const STORE_CODES = Object.keys(STORE_NAMES).sort();
+const STORE_LABEL_TO_CODE = {};
+STORE_CODES.forEach(code => { STORE_LABEL_TO_CODE[storeLabel(code)] = code; });
+function storeCodeFromLabel(label) {
+  if (STORE_LABEL_TO_CODE[label]) return STORE_LABEL_TO_CODE[label];
+  const m = String(label).match(/Store (\d+)/);
+  return m ? m[1] : null;
+}
 const channelKey = (rawChannel) => OTHER_CHANNELS.includes(rawChannel) ? 'Other' : rawChannel;
 const channelMatch = (r, chan) => chan === 'Other' ? OTHER_CHANNELS.includes(r.channel) : r.channel === chan;
+const DIVISIONS = ['RETAIL', 'WHOLESALE', 'BUILDER', 'PROPERTY MGMT', 'E-COMMERCE', 'Other'];
+const divisionLabel = (d) => d === 'Other' ? 'Other' : titleCase(d);
 
 let RAW_ROWS = []; // as fetched from Supabase — both loaded and unloaded fields present
 let ALL_ROWS = [];  // RAW_ROWS remapped to the active cost basis (cost/revenue/profit)
@@ -310,6 +326,12 @@ let reviewExpandedStyle = null; // style name expanded (all colors) within the r
 let expandedWeek = null; // ISO date (week start) expanded in the Cost of Goods by Week table
 let weekAvgWindow = 4; // 4 | 13 — trailing COGS average window under that table
 let weekCategoryFilter = 'All'; // 'All' | 'Carpet' | 'Hard Surface' | 'Tile' — scopes the weekly COGS table
+let salespersonReviewOpen = false; // full-page "all salespeople" view
+let rankDivisionFilter = 'All'; // 'All' | one of DIVISIONS — scopes Salesperson/Store charts alongside rankCategoryFilter
+let rankStoreFilter = 'All'; // 'All' | a store code — scopes Salesperson/Store charts alongside the other filters
+let storeReviewOf = null; // store code, or null — full-page store review
+let storeReviewCat = null; // which category pill is active within the store review's Products table
+let hotColdWindow = 90; // 30 | 60 | 90 | 180 | 365 — trailing days for Hot 5 / Cold 5, independent of the period selector
 let trendMetric = 'cost'; // 'cost' | 'qty' | 'revenue' | 'profit' | 'margin' — Overall tab's trend chart
 let rankMetric = 'revenue'; // same set — Overall tab's Salesperson/Store bar charts
 let rankCategoryFilter = 'All'; // 'All' | 'Carpet' | 'Hard Surface' | 'Tile' — scopes those same charts
@@ -564,6 +586,8 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   channelReviewOf = null;
   reviewExpandedStyle = null;
   expandedWeek = null;
+  salespersonReviewOpen = false;
+  storeReviewOf = null;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
   render();
 });
@@ -573,6 +597,40 @@ document.getElementById('content').addEventListener('click', (e) => {
   const backBtn = e.target.closest('#channel-review-back');
   if (backBtn) {
     channelReviewOf = null;
+    reviewExpandedStyle = null;
+    render();
+    return;
+  }
+  const spBackBtn = e.target.closest('#salesperson-review-back');
+  if (spBackBtn) {
+    salespersonReviewOpen = false;
+    render();
+    return;
+  }
+  const spLink = e.target.closest('.salesperson-chart-link');
+  if (spLink) {
+    salespersonReviewOpen = true;
+    render();
+    return;
+  }
+  const storeBackBtn = e.target.closest('#store-review-back');
+  if (storeBackBtn) {
+    storeReviewOf = null;
+    reviewExpandedStyle = null;
+    render();
+    return;
+  }
+  const storeBarRow = e.target.closest('.store-bar-row');
+  if (storeBarRow) {
+    storeReviewOf = storeCodeFromLabel(storeBarRow.dataset.key);
+    storeReviewCat = null;
+    reviewExpandedStyle = null;
+    render();
+    return;
+  }
+  const storeCatPill = e.target.closest('button.store-cat-pill');
+  if (storeCatPill) {
+    storeReviewCat = storeCatPill.dataset.cat;
     reviewExpandedStyle = null;
     render();
     return;
@@ -602,6 +660,18 @@ document.getElementById('content').addEventListener('click', (e) => {
     render();
     return;
   }
+  const rankDivBtn = e.target.closest('button.rank-div-btn');
+  if (rankDivBtn) {
+    rankDivisionFilter = rankDivBtn.dataset.div;
+    render();
+    return;
+  }
+  const rankStoreBtn = e.target.closest('button.rank-store-btn');
+  if (rankStoreBtn) {
+    rankStoreFilter = rankStoreBtn.dataset.store;
+    render();
+    return;
+  }
   const weekRow = e.target.closest('tr.week-row');
   if (weekRow) {
     const key = weekRow.dataset.week;
@@ -612,6 +682,12 @@ document.getElementById('content').addEventListener('click', (e) => {
   const weekAvgBtn = e.target.closest('button.week-avg-btn');
   if (weekAvgBtn) {
     weekAvgWindow = +weekAvgBtn.dataset.window;
+    render();
+    return;
+  }
+  const hotColdBtn = e.target.closest('button.hotcold-window-btn');
+  if (hotColdBtn) {
+    hotColdWindow = +hotColdBtn.dataset.days;
     render();
     return;
   }
@@ -676,6 +752,48 @@ document.getElementById('content').addEventListener('click', (e) => {
     render();
   }
 });
+
+// Independent of the page's period selector — always trailing N days back
+// from the latest actual delivered-sales date in the data.
+function rowsInTrailingDays(days) {
+  const dated = ALL_ROWS.filter(r => r.del_date);
+  if (dated.length === 0) return [];
+  const maxDate = dated.reduce((m, r) => (r.del_date > m ? r.del_date : m), dated[0].del_date);
+  const asOf = new Date(maxDate + 'T00:00:00');
+  const cutoff = new Date(asOf);
+  cutoff.setDate(cutoff.getDate() - days);
+  return dated.filter(r => {
+    const d = new Date(r.del_date + 'T00:00:00');
+    return d > cutoff && d <= asOf;
+  });
+}
+
+function styleColorEntries(rows) {
+  const m = new Map();
+  rows.forEach(r => {
+    const key = `${r.style} — ${r.color || '(none)'}`;
+    if (!m.has(key)) m.set(key, { qty: 0, cost: 0, rev: 0, profit: 0 });
+    const e = m.get(key);
+    e.qty += +r.qty; e.cost += +r.cost; e.rev += +r.revenue; e.profit += +r.profit;
+  });
+  return [...m.entries()];
+}
+
+function renderHotColdTable(entries, label) {
+  const rowsHtml = entries.map(([key, e]) => `<tr>
+    <td>${key}</td>
+    <td class="num">${fmt$(e.cost)}</td>
+    <td class="num">${fmtNum(e.qty)}</td>
+    <td class="num">${fmt$(e.rev)}</td>
+    <td class="num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+  </tr>`).join('') || `<tr><td colspan="5" class="empty">No data.</td></tr>`;
+  return `
+    <table class="card">
+      <thead><tr><th>${label}</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  `;
+}
 
 function topStylesByCost(rows, n) {
   const m = new Map();
@@ -749,9 +867,46 @@ function render() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
   if (channelReviewOf) { content.innerHTML = renderChannelReview(channelReviewOf); return; }
+  if (storeReviewOf) { content.innerHTML = renderStoreReview(storeReviewOf); return; }
+  if (salespersonReviewOpen) { content.innerHTML = renderSalespersonReview(); return; }
   if (activeTab === 'overall') { content.innerHTML = renderOverall(); wireTrendChart(); }
   else if (activeTab === 'leaderboard') content.innerHTML = renderLeaderboard();
   else content.innerHTML = renderCategory(activeTab);
+}
+
+function renderSalespersonReview() {
+  const curRows = rowsFor(selectedPeriod.cur);
+  let rankRows = rankCategoryFilter === 'All' ? curRows : curRows.filter(r => r.category === rankCategoryFilter);
+  if (rankDivisionFilter !== 'All') rankRows = rankRows.filter(r => channelKey(r.channel) === rankDivisionFilter);
+  if (rankStoreFilter !== 'All') rankRows = rankRows.filter(r => r.store === rankStoreFilter);
+  const rankCur = agg(rankRows);
+  const metricBtns = Object.entries(TREND_METRICS).map(([key, def]) =>
+    `<button class="rank-metric-btn ${rankMetric === key ? 'active' : ''}" data-metric="${key}">${def.label}</button>`
+  ).join('');
+  const catBtns = ['All', ...CATS].map(cat =>
+    `<button class="rank-cat-btn ${rankCategoryFilter === cat ? 'active' : ''}" data-cat="${cat}">${cat}</button>`
+  ).join('');
+  const divBtns = ['All', ...DIVISIONS].map(div =>
+    `<button class="rank-div-btn ${rankDivisionFilter === div ? 'active' : ''}" data-div="${div}">${div === 'All' ? 'All' : divisionLabel(div)}</button>`
+  ).join('');
+  const storeBtns = ['All', ...STORE_CODES].map(code =>
+    `<button class="rank-store-btn ${rankStoreFilter === code ? 'active' : ''}" data-store="${code}">${code === 'All' ? 'All' : storeLabel(code)}</button>`
+  ).join('');
+  const all = topEntriesByCategory(rankRows, r => r.salesperson || '(none)', Infinity, rankMetric);
+
+  return `
+    <div class="review-header">
+      <button id="salesperson-review-back" class="btn">← Back to Dashboard</button>
+      <h2 class="review-title">All Salespeople — ${TREND_METRICS[rankMetric].label}</h2>
+    </div>
+    <div class="cat-pills">${metricBtns}</div>
+    <div class="cat-pills">${catBtns}</div>
+    <div class="cat-pills">${divBtns}</div>
+    <div class="cat-pills">${storeBtns}</div>
+    <div class="review-scroll">
+      ${renderStackedBarChart(all, { chartW: 900, labelW: 160, fmt: TREND_METRICS[rankMetric].fmt, overallMargin: rankCur.margin })}
+    </div>
+  `;
 }
 
 function renderChannelReview(chan) {
@@ -820,6 +975,85 @@ function renderChannelReview(chan) {
       <thead><tr><th>Category</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num">Share</th><th class="num">YoY Rev</th></tr></thead>
       <tbody>${catRows}</tbody>
     </table>
+    <h2 class="section">Products</h2>
+    <div class="cat-pills">${pillsHtml}</div>
+    <table class="card">
+      <thead><tr><th>Style</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th><th class="num">Share of COGS</th></tr></thead>
+      <tbody>${styleRowsHtml}</tbody>
+    </table>
+  `;
+}
+
+function renderStoreReview(storeCode) {
+  const curAll = rowsFor(selectedPeriod.cur).filter(r => r.store === storeCode);
+  const priorAll = rowsFor(selectedPeriod.prior).filter(r => r.store === storeCode);
+  const cur = agg(curAll), prior = agg(priorAll);
+  const hasPrior = priorAll.length > 0;
+
+  const rawCurAll = rawRowsFor(selectedPeriod.cur).filter(r => r.store === storeCode);
+  const fifthKpi = costBasis === 'unloaded'
+    ? loadedUnloadedDiffKpi(rawCurAll)
+    : kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null);
+
+  const kpis = [
+    kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
+    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
+    kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
+    kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    fifthKpi,
+  ].join('');
+
+  const catRows = CATS.map(cat => {
+    const c = agg(curAll.filter(r => r.category === cat));
+    const p = agg(priorAll.filter(r => r.category === cat));
+    const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
+    const share = cur.rev > 0 ? c.rev / cur.rev : 0;
+    return `<tr>
+      <td><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${CAT_COLOR[cat]};margin-right:7px;"></span>${cat}</td>
+      <td class="num">${fmt$(c.rev)}</td>
+      <td class="num">${fmt$(c.cost)}</td>
+      <td class="num">${fmt$(c.profit)}</td>
+      <td class="num">${fmtPct(c.margin)}</td>
+      <td class="num">${fmtPct(share)}</td>
+      <td class="num">${d ? `<span class="${d.cls === 'good' ? 'status-good' : d.cls === 'bad' ? 'status-bad' : ''}">${d.text}</span>` : '–'}</td>
+    </tr>`;
+  }).join('');
+
+  const topSales = topEntriesByCategory(curAll, r => r.salesperson || '(none)', 10, 'revenue');
+
+  if (!storeReviewCat || !CATS.includes(storeReviewCat)) storeReviewCat = CATS[0];
+  const pillsHtml = CATS.map(cat => `<button class="store-cat-pill ${cat === storeReviewCat ? 'active' : ''}" data-cat="${cat}">${cat}</button>`).join('');
+
+  const catRowsForPill = curAll.filter(r => r.category === storeReviewCat);
+  const allStyles = topStylesByCost(catRowsForPill, Infinity);
+  const catTotalCost = catRowsForPill.reduce((s, r) => s + (+r.cost), 0);
+  const styleRowsHtml = allStyles.map(([style, e]) => {
+    const isOpen = reviewExpandedStyle === style;
+    const row = `<tr class="review-style-row" data-style="${style.replace(/"/g, '&quot;')}">
+      <td><span class="chev">${isOpen ? '▾' : '▸'}</span>${style}</td>
+      <td class="num">${fmt$(e.cost)}</td>
+      <td class="num">${fmtNum(e.qty)}</td>
+      <td class="num">${fmt$(e.rev)}</td>
+      <td class="num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+      <td class="num">${fmtPct(catTotalCost > 0 ? e.cost / catTotalCost : 0)}</td>
+    </tr>`;
+    return row + (isOpen ? styleColorExpandRow(catRowsForPill, style, Infinity) : '');
+  }).join('') || `<tr><td colspan="6" class="empty">No ${storeReviewCat} lines for ${storeLabel(storeCode)} in this period.</td></tr>`;
+
+  return `
+    <div class="review-header">
+      <button id="store-review-back" class="btn">← Back to Dashboard</button>
+      <h2 class="review-title">${storeLabel(storeCode)} — Store Review</h2>
+    </div>
+    <div class="kpi-row">${kpis}</div>
+    ${imputedNote(curAll)}
+    <h2 class="section">By Category</h2>
+    <table class="card">
+      <thead><tr><th>Category</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num">Share</th><th class="num">YoY Rev</th></tr></thead>
+      <tbody>${catRows}</tbody>
+    </table>
+    <h2 class="section">Top Salespeople at this Store</h2>
+    ${renderStackedBarChart(topSales, { chartW: 620, labelW: 130, fmt: fmt$ })}
     <h2 class="section">Products</h2>
     <div class="cat-pills">${pillsHtml}</div>
     <table class="card">
@@ -1096,11 +1330,16 @@ function renderStackedBarChart(result, opts) {
       statText = '–';
     }
 
+    const clickOverlay = opts.rowClickClass
+      ? `<rect x="0" y="${y}" width="${chartW}" height="${barH}" fill="transparent" class="${opts.rowClickClass}" data-key="${String(e.key).replace(/"/g, '&quot;')}"/>`
+      : '';
+
     return `
       <text x="${labelW - 10}" y="${y + barH / 2 + 4}" text-anchor="end" font-size="12.5" fill="var(--text-secondary)">${e.key}</text>
       <text x="${(barStart - 10).toFixed(1)}" y="${y + barH / 2 + 4}" text-anchor="end" font-size="11" font-weight="600" fill="${statCls}">${statText}</text>
       ${segsSvg}
       <text x="${(tipX + 8).toFixed(1)}" y="${y + barH / 2 + 4}" font-size="12" font-weight="700" fill="var(--text-primary)">${fmt(e.total)}</text>
+      ${clickOverlay}
     `;
   }).join('');
 
@@ -1156,6 +1395,14 @@ function renderOverall() {
 
   const channelRows = channelMixRows(curRows, priorRows, hasPrior, 'overall');
 
+  const hotColdRows = rowsInTrailingDays(hotColdWindow);
+  const scEntries = styleColorEntries(hotColdRows).filter(([, e]) => e.cost > 0);
+  const hot5 = scEntries.slice().sort((a, b) => b[1].cost - a[1].cost).slice(0, 5);
+  const cold5 = scEntries.slice().sort((a, b) => a[1].cost - b[1].cost).slice(0, 5);
+  const hotColdWindowBtns = [30, 60, 90, 180, 365].map(d =>
+    `<button class="hotcold-window-btn ${hotColdWindow === d ? 'active' : ''}" data-days="${d}">Last ${d} Days</button>`
+  ).join('');
+
   return `
     <div class="kpi-row">${kpis}</div>
     ${imputedNote(curRows)}
@@ -1175,6 +1422,18 @@ function renderOverall() {
         </table>
       </div>
     </div>
+    <h2 class="section">Hot &amp; Cold Products</h2>
+    <div class="cat-pills">${hotColdWindowBtns}</div>
+    <div class="two-col">
+      <div>
+        <h2 class="section">Hot 5 (by COGS)</h2>
+        ${renderHotColdTable(hot5, 'Style — Color')}
+      </div>
+      <div>
+        <h2 class="section">Cold 5 (by COGS)</h2>
+        ${renderHotColdTable(cold5, 'Style — Color')}
+      </div>
+    </div>
     <h2 class="section">Trend</h2>
     ${renderTrendChart()}
     <h2 class="section">By Salesperson &amp; Store</h2>
@@ -1184,18 +1443,26 @@ function renderOverall() {
     <div class="cat-pills">${['All', ...CATS].map(cat =>
       `<button class="rank-cat-btn ${rankCategoryFilter === cat ? 'active' : ''}" data-cat="${cat}">${cat}</button>`
     ).join('')}</div>
+    <div class="cat-pills">${['All', ...DIVISIONS].map(div =>
+      `<button class="rank-div-btn ${rankDivisionFilter === div ? 'active' : ''}" data-div="${div}">${div === 'All' ? 'All' : divisionLabel(div)}</button>`
+    ).join('')}</div>
+    <div class="cat-pills">${['All', ...STORE_CODES].map(code =>
+      `<button class="rank-store-btn ${rankStoreFilter === code ? 'active' : ''}" data-store="${code}">${code === 'All' ? 'All' : storeLabel(code)}</button>`
+    ).join('')}</div>
     ${(() => {
-      const rankRows = rankCategoryFilter === 'All' ? curRows : curRows.filter(r => r.category === rankCategoryFilter);
+      let rankRows = rankCategoryFilter === 'All' ? curRows : curRows.filter(r => r.category === rankCategoryFilter);
+      if (rankDivisionFilter !== 'All') rankRows = rankRows.filter(r => channelKey(r.channel) === rankDivisionFilter);
+      if (rankStoreFilter !== 'All') rankRows = rankRows.filter(r => r.store === rankStoreFilter);
       const rankCur = agg(rankRows);
       return `
     <div class="two-col">
-      <div>
-        <h2 class="section">${TREND_METRICS[rankMetric].label} by Salesperson (Top 10)</h2>
+      <div class="salesperson-chart-link">
+        <h2 class="section">${TREND_METRICS[rankMetric].label} by Salesperson (Top 10) <span class="view-all-hint">View all salespeople →</span></h2>
         ${renderStackedBarChart(topEntriesByCategory(rankRows, r => r.salesperson || '(none)', 10, rankMetric), { chartW: 480, labelW: 130, fmt: TREND_METRICS[rankMetric].fmt, overallMargin: rankCur.margin })}
       </div>
       <div>
-        <h2 class="section">${TREND_METRICS[rankMetric].label} by Store</h2>
-        ${renderStackedBarChart(topEntriesByCategory(rankRows, r => storeLabel(r.store), Infinity, rankMetric), { chartW: 480, labelW: 110, fmt: TREND_METRICS[rankMetric].fmt, overallMargin: rankCur.margin })}
+        <h2 class="section">${TREND_METRICS[rankMetric].label} by Store <span class="view-all-hint">Click a store for detail →</span></h2>
+        ${renderStackedBarChart(topEntriesByCategory(rankRows, r => storeLabel(r.store), Infinity, rankMetric), { chartW: 480, labelW: 110, fmt: TREND_METRICS[rankMetric].fmt, overallMargin: rankCur.margin, rowClickClass: 'store-bar-row' })}
       </div>
     </div>`;
     })()}
