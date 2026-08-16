@@ -79,6 +79,9 @@ const toDate = (yyyymmdd) => {
       cost: L.cost,
       revenue: L.effRev,
       profit: L.effProfit,
+      unloaded_cost: L.unloadedCost,
+      unloaded_revenue: L.unloadedEffRev,
+      unloaded_profit: L.unloadedEffProfit,
       is_imputed: L.isImputed,
     };
   }).filter((r) => r.del_year != null && r.del_month != null);

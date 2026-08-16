@@ -110,6 +110,14 @@
   .custom-range { display: flex; align-items: center; gap: 6px; }
   .custom-range span { font-size: 12px; color: var(--text-muted); }
 
+  .cost-toggle { display: flex; border: 1px solid var(--gridline); border-radius: 8px; overflow: hidden; }
+  .cost-basis-btn {
+    font-size: 12.5px; font-weight: 600; padding: 7px 12px; border: none; background: var(--surface-1);
+    color: var(--text-secondary); cursor: pointer;
+  }
+  .cost-basis-btn + .cost-basis-btn { border-left: 1px solid var(--gridline); }
+  .cost-basis-btn.active { background: var(--accent); color: #fff; }
+
   nav.tabs {
     display: flex; gap: 4px; border-bottom: 1px solid var(--gridline); margin-bottom: 20px;
     flex-wrap: wrap;
@@ -162,12 +170,12 @@
   .review-title { font-size: 18px; font-weight: 700; margin: 0; }
 
   .cat-pills { display: flex; gap: 6px; margin: 4px 0 12px; }
-  .cat-pill {
+  .cat-pill, .trend-metric-btn {
     font-size: 13px; font-weight: 600; padding: 7px 16px; border-radius: 999px;
     border: 1px solid var(--gridline); background: var(--surface-1); color: var(--text-secondary);
     cursor: pointer;
   }
-  .cat-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cat-pill.active, .trend-metric-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .stat-pair { display: flex; gap: 20px; margin-top: 4px; }
   .stat-pair .stat { flex: 1; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
@@ -185,6 +193,25 @@
 
   .empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; }
   footer.foot { margin-top: 40px; font-size: 11px; color: var(--text-muted); }
+
+  /* ---- trend chart ---- */
+  .chart-card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px 16px 8px; }
+  .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 8px; }
+  .chart-legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--text-secondary); }
+  .chart-legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .chart-legend .swatch { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+  .chart-scroll { overflow-x: auto; }
+  .chart-svg-wrap { position: relative; min-width: 560px; }
+  .chart-tooltip {
+    position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    display: none; white-space: nowrap; z-index: 5;
+  }
+  .chart-tooltip .tt-date { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; }
+  .chart-tooltip .tt-row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+  .chart-tooltip .tt-key { display: inline-block; width: 10px; height: 2px; border-radius: 1px; }
+  .chart-tooltip .tt-label { color: var(--text-secondary); }
+  .chart-tooltip .tt-value { color: var(--text-primary); font-weight: 700; margin-left: auto; padding-left: 10px; font-variant-numeric: tabular-nums; }
   .imputed-note { font-size: 11.5px; color: var(--text-muted); margin: -10px 0 20px; }
   .imputed-note strong { color: var(--text-secondary); }
 </style>
@@ -209,6 +236,10 @@
         <div class="meta" id="refreshed-meta">Loading…</div>
       </div>
       <div class="controls">
+        <div class="cost-toggle">
+          <button class="cost-basis-btn active" data-basis="loaded">Loaded Cost</button>
+          <button class="cost-basis-btn" data-basis="unloaded">Unloaded Cost</button>
+        </div>
         <select id="period-select"></select>
         <div id="custom-range" class="custom-range" style="display:none;">
           <input type="month" id="range-from" />
@@ -248,7 +279,16 @@ const MARGIN_TARGETS = {
   'BUILDER':   { good: 0.35, bad: 0.25 },
 };
 
-let ALL_ROWS = [];
+// Low-volume channels folded into a single "Other" row on every Channel Mix
+// table — Overstock/Commercial/Supplies/Capital Improve individually aren't
+// worth their own row, but shouldn't just disappear either.
+const OTHER_CHANNELS = ['OVERSTOCK', 'COMMERCIAL', 'SUPPLIES', 'CAPITAL IMPROVE'];
+const channelKey = (rawChannel) => OTHER_CHANNELS.includes(rawChannel) ? 'Other' : rawChannel;
+const channelMatch = (r, chan) => chan === 'Other' ? OTHER_CHANNELS.includes(r.channel) : r.channel === chan;
+
+let RAW_ROWS = []; // as fetched from Supabase — both loaded and unloaded fields present
+let ALL_ROWS = [];  // RAW_ROWS remapped to the active cost basis (cost/revenue/profit)
+let costBasis = 'loaded'; // 'loaded' | 'unloaded'
 let PERIODS = [];       // [{key, label, year, months:[1..n]}]
 let selectedPeriod = null;
 let activeTab = 'overall';
@@ -259,6 +299,7 @@ let expandedChannelStyle = null; // key: `${scope}|${channel}|${style}`
 let channelReviewOf = null; // channel name, or null — full-page channel review
 let channelReviewCat = null; // which category pill is active within the channel review
 let reviewExpandedStyle = null; // style name expanded (all colors) within the review's Products table
+let trendMetric = 'cost'; // 'cost' | 'qty' — Overall tab's trend chart
 
 // ---------------- formatting ----------------
 const fmt$ = (n) => {
@@ -330,12 +371,34 @@ async function loadData() {
     rows = rows.concat(data);
     if (data.length < PAGE) break;
   }
-  ALL_ROWS = rows;
+  RAW_ROWS = rows;
+  applyCostBasis();
 
   buildPeriods();
   renderPeriodSelect();
   render();
 }
+
+// Remaps RAW_ROWS -> ALL_ROWS so every render function (agg, topStylesByCost,
+// channelMixRows, trailingCogsAverages, ...) can keep reading plain
+// r.cost/r.revenue/r.profit without knowing which basis is active.
+function applyCostBasis() {
+  ALL_ROWS = costBasis === 'loaded' ? RAW_ROWS : RAW_ROWS.map(r => ({
+    ...r,
+    cost: r.unloaded_cost,
+    revenue: r.unloaded_revenue,
+    profit: r.unloaded_profit,
+  }));
+}
+
+document.querySelectorAll('.cost-basis-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    costBasis = btn.dataset.basis;
+    document.querySelectorAll('.cost-basis-btn').forEach(b => b.classList.toggle('active', b === btn));
+    applyCostBasis();
+    render();
+  });
+});
 
 let DATA_MIN = null, DATA_MAX = null; // {y, m} bounds of available data
 
@@ -432,6 +495,34 @@ function rowsFor(range, cat) {
   return ALL_ROWS.filter(f);
 }
 
+// Same filter as rowsFor, but against RAW_ROWS — which always carries both
+// cost (loaded) and unloaded_cost regardless of the active toggle — so the
+// "Loaded − Unloaded" KPI can be computed without depending on which basis
+// ALL_ROWS is currently remapped to.
+function rawRowsFor(range, cat) {
+  if (!range) return [];
+  const lo = ymIdx(range.fromY, range.fromM);
+  const hi = ymIdx(range.toY, range.toM);
+  return RAW_ROWS.filter(r => {
+    const idx = ymIdx(r.del_year, r.del_month);
+    return idx >= lo && idx <= hi && (!cat || r.category === cat);
+  });
+}
+
+function loadedUnloadedDiffKpi(rawRows) {
+  let loadedCost = 0, unloadedCost = 0, rev = 0;
+  rawRows.forEach(r => { loadedCost += +r.cost; unloadedCost += +r.unloaded_cost; rev += +r.revenue; });
+  const diff = loadedCost - unloadedCost;
+  const loadedMargin = rev > 0 ? (rev - loadedCost) / rev : null;
+  const unloadedMargin = rev > 0 ? (rev - unloadedCost) / rev : null;
+  const marginDiff = (loadedMargin != null && unloadedMargin != null) ? unloadedMargin - loadedMargin : null;
+  const delta = marginDiff == null ? null : {
+    text: `${marginDiff >= 0 ? '+' : ''}${(marginDiff * 100).toFixed(1)}pp margin`,
+    cls: marginDiff > 0.05 ? 'good' : marginDiff < -0.05 ? 'bad' : '',
+  };
+  return kpiCard('Loaded − Unloaded', fmt$(diff), delta);
+}
+
 function agg(rows) {
   const a = { rev: 0, cost: 0, profit: 0, qty: 0, lines: rows.length, invs: new Set() };
   rows.forEach(r => { a.rev += +r.revenue; a.cost += +r.cost; a.profit += +r.profit; a.qty += +r.qty; a.invs.add(r.invoice); });
@@ -468,6 +559,12 @@ document.getElementById('content').addEventListener('click', (e) => {
   if (pillBtn) {
     channelReviewCat = pillBtn.dataset.cat;
     reviewExpandedStyle = null;
+    render();
+    return;
+  }
+  const metricBtn = e.target.closest('button.trend-metric-btn');
+  if (metricBtn) {
+    trendMetric = metricBtn.dataset.metric;
     render();
     return;
   }
@@ -591,23 +688,28 @@ function render() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
   if (channelReviewOf) { content.innerHTML = renderChannelReview(channelReviewOf); return; }
-  if (activeTab === 'overall') content.innerHTML = renderOverall();
+  if (activeTab === 'overall') { content.innerHTML = renderOverall(); wireTrendChart(); }
   else if (activeTab === 'leaderboard') content.innerHTML = renderLeaderboard();
   else content.innerHTML = renderCategory(activeTab);
 }
 
 function renderChannelReview(chan) {
-  const curAll = rowsFor(selectedPeriod.cur).filter(r => r.channel === chan);
-  const priorAll = rowsFor(selectedPeriod.prior).filter(r => r.channel === chan);
+  const curAll = rowsFor(selectedPeriod.cur).filter(r => channelMatch(r, chan));
+  const priorAll = rowsFor(selectedPeriod.prior).filter(r => channelMatch(r, chan));
   const cur = agg(curAll), prior = agg(priorAll);
   const hasPrior = priorAll.length > 0;
 
+  const rawCurAll = rawRowsFor(selectedPeriod.cur).filter(r => channelMatch(r, chan));
+  const fifthKpi = costBasis === 'unloaded'
+    ? loadedUnloadedDiffKpi(rawCurAll)
+    : kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null);
+
   const kpis = [
     kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard('HB COGS', fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
+    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
     kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
     kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
-    kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null),
+    fifthKpi,
   ].join('');
 
   const catRows = CATS.map(cat => {
@@ -680,6 +782,160 @@ function imputedNote(rows) {
   </div>`;
 }
 
+// ---------------- trend chart (Overall tab) ----------------
+function trendMonths(range) {
+  const lo = ymIdx(range.fromY, range.fromM), hi = ymIdx(range.toY, range.toM);
+  const out = [];
+  for (let idx = lo; idx <= hi; idx++) out.push({ y: Math.floor(idx / 12), m: (idx % 12) + 1 });
+  return out;
+}
+
+function niceCeil(v) {
+  if (v <= 0) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const base = Math.pow(10, exp);
+  const frac = v / base;
+  const niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+  return niceFrac * base;
+}
+
+function fmtAxisNum(v) {
+  if (trendMetric === 'cost') return fmt$(v);
+  const abs = Math.abs(v);
+  if (abs >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return Math.round(v).toLocaleString();
+}
+
+function renderTrendChart() {
+  if (!selectedPeriod || !selectedPeriod.cur) return '<div class="empty">No period selected.</div>';
+  const months = trendMonths(selectedPeriod.cur);
+  if (months.length === 0) return '<div class="empty">No data in this period.</div>';
+
+  const byMonth = months.map(({ y, m }) => {
+    const rows = ALL_ROWS.filter(r => r.del_year === y && r.del_month === m);
+    const vals = {};
+    CATS.forEach(c => vals[c] = 0);
+    rows.forEach(r => { vals[r.category] += trendMetric === 'qty' ? (+r.qty) : (+r.cost); });
+    return { y, m, vals };
+  });
+
+  const maxVal = Math.max(1, ...byMonth.map(d => Math.max(...CATS.map(c => d.vals[c]))));
+  const niceMax = niceCeil(maxVal);
+  const TICKS = 4;
+
+  const marginL = 56, marginR = 16, marginT = 14, marginB = 28;
+  const pointGap = 56;
+  const plotW = Math.max(360, (months.length - 1) * pointGap);
+  const W = marginL + plotW + marginR;
+  const H = 260;
+  const plotH = H - marginT - marginB;
+
+  const xAt = (i) => marginL + (months.length > 1 ? i * (plotW / (months.length - 1)) : plotW / 2);
+  const yAt = (v) => marginT + plotH - (niceMax > 0 ? (v / niceMax) * plotH : 0);
+
+  let gridSvg = '';
+  for (let t = 0; t <= TICKS; t++) {
+    const v = (niceMax / TICKS) * t;
+    const y = yAt(v);
+    gridSvg += `<line x1="${marginL}" y1="${y.toFixed(1)}" x2="${marginL + plotW}" y2="${y.toFixed(1)}" stroke="var(--gridline)" stroke-width="1"/>`;
+    gridSvg += `<text x="${marginL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="10.5" fill="var(--text-muted)">${fmtAxisNum(v)}</text>`;
+  }
+
+  const labelEvery = months.length > 14 ? Math.ceil(months.length / 12) : 1;
+  let xLabelsSvg = '';
+  months.forEach((mo, i) => {
+    if (i % labelEvery !== 0 && i !== months.length - 1) return;
+    xLabelsSvg += `<text x="${xAt(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10.5" fill="var(--text-muted)">${MONTH_NAMES[mo.m - 1]} '${String(mo.y).slice(2)}</text>`;
+  });
+
+  let linesSvg = '';
+  CATS.forEach(cat => {
+    const pts = byMonth.map((d, i) => `${xAt(i).toFixed(1)},${yAt(d.vals[cat]).toFixed(1)}`).join(' ');
+    linesSvg += `<polyline points="${pts}" fill="none" stroke="${CAT_COLOR[cat]}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const lastI = byMonth.length - 1;
+    linesSvg += `<circle cx="${xAt(lastI).toFixed(1)}" cy="${yAt(byMonth[lastI].vals[cat]).toFixed(1)}" r="4" fill="${CAT_COLOR[cat]}" stroke="var(--surface-1)" stroke-width="2"/>`;
+  });
+
+  const legend = CATS.map(cat => `<span class="key"><span class="swatch" style="background:${CAT_COLOR[cat]}"></span>${cat}</span>`).join('');
+  const pointsData = byMonth.map((d, i) => ({ y: d.y, m: d.m, vals: d.vals, x: xAt(i) }));
+  const dataAttr = encodeURIComponent(JSON.stringify(pointsData));
+
+  return `
+    <div class="chart-card">
+      <div class="chart-head">
+        <div class="chart-legend">${legend}</div>
+        <div class="cat-pills">
+          <button class="trend-metric-btn ${trendMetric === 'cost' ? 'active' : ''}" data-metric="cost">Cost of Goods</button>
+          <button class="trend-metric-btn ${trendMetric === 'qty' ? 'active' : ''}" data-metric="qty">Units</button>
+        </div>
+      </div>
+      <div class="chart-scroll">
+        <div class="chart-svg-wrap" style="width:${W}px;">
+          <svg id="trend-svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" data-months="${dataAttr}" data-plot-l="${marginL}" data-plot-r="${marginL + plotW}">
+            ${gridSvg}
+            ${linesSvg}
+            ${xLabelsSvg}
+            <line id="trend-crosshair" x1="0" y1="${marginT}" x2="0" y2="${marginT + plotH}" stroke="var(--text-muted)" stroke-width="1" style="display:none;"/>
+          </svg>
+          <div class="chart-tooltip" id="trend-tooltip"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function hideTrendHover() {
+  const tooltip = document.getElementById('trend-tooltip');
+  const crosshair = document.getElementById('trend-crosshair');
+  if (tooltip) tooltip.style.display = 'none';
+  if (crosshair) crosshair.style.display = 'none';
+}
+
+function wireTrendChart() {
+  const svg = document.getElementById('trend-svg');
+  if (!svg) return;
+  const tooltip = document.getElementById('trend-tooltip');
+  const crosshair = document.getElementById('trend-crosshair');
+  const months = JSON.parse(decodeURIComponent(svg.getAttribute('data-months')));
+  const plotL = +svg.getAttribute('data-plot-l'), plotR = +svg.getAttribute('data-plot-r');
+
+  svg.addEventListener('mousemove', (e) => {
+    const rect = svg.getBoundingClientRect();
+    const scaleX = svg.viewBox.baseVal.width / rect.width;
+    const px = (e.clientX - rect.left) * scaleX;
+    if (px < plotL - 4 || px > plotR + 4) { hideTrendHover(); return; }
+
+    let nearest = months[0], bestDist = Infinity;
+    months.forEach(mo => { const d = Math.abs(mo.x - px); if (d < bestDist) { bestDist = d; nearest = mo; } });
+
+    crosshair.setAttribute('x1', nearest.x);
+    crosshair.setAttribute('x2', nearest.x);
+    crosshair.style.display = 'block';
+
+    const rowsHtml = CATS.map(cat => {
+      const val = nearest.vals[cat] || 0;
+      const valText = trendMetric === 'cost' ? fmt$(val) : fmtNum(val);
+      return `<div class="tt-row"><span class="tt-key" style="background:${CAT_COLOR[cat]}"></span><span class="tt-label">${cat}</span><span class="tt-value">${valText}</span></div>`;
+    }).join('');
+    const total = CATS.reduce((s, c) => s + (nearest.vals[c] || 0), 0);
+    const totalText = trendMetric === 'cost' ? fmt$(total) : fmtNum(total);
+
+    tooltip.innerHTML = `<div class="tt-date">${monthLabel(nearest.y, nearest.m)}</div>${rowsHtml}<div class="tt-row" style="border-top:1px solid var(--gridline);margin-top:5px;padding-top:5px;"><span class="tt-label" style="font-weight:600;">Total</span><span class="tt-value">${totalText}</span></div>`;
+    tooltip.style.display = 'block';
+
+    const wrapRect = svg.parentElement.getBoundingClientRect();
+    const localX = e.clientX - wrapRect.left;
+    const localY = e.clientY - wrapRect.top;
+    const ttWidth = 170;
+    let leftPx = localX + 14;
+    if (leftPx + ttWidth > wrapRect.width) leftPx = localX - ttWidth - 14;
+    tooltip.style.left = Math.max(0, leftPx) + 'px';
+    tooltip.style.top = Math.max(0, localY - 46) + 'px';
+  });
+
+  svg.addEventListener('mouseleave', hideTrendHover);
+}
+
 function kpiCard(label, valueText, delta) {
   return `<div class="kpi">
     <div class="label">${label}</div>
@@ -694,12 +950,16 @@ function renderOverall() {
   const cur = agg(curRows), prior = agg(priorRows);
   const hasPrior = priorRows.length > 0;
 
+  const fifthKpi = costBasis === 'unloaded'
+    ? loadedUnloadedDiffKpi(rawRowsFor(selectedPeriod.cur))
+    : kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null);
+
   const kpis = [
     kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard('HB COGS', fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
+    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
     kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
     kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
-    kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null),
+    fifthKpi,
   ].join('');
 
   const catRows = CATS.map(cat => {
@@ -739,11 +999,13 @@ function renderOverall() {
         </table>
       </div>
     </div>
+    <h2 class="section">Trend</h2>
+    ${renderTrendChart()}
   `;
 }
 
 function channelExpandRow(scope, chan, curRows) {
-  const scopedRows = curRows.filter(r => r.channel === chan);
+  const scopedRows = curRows.filter(r => channelMatch(r, chan));
   const top5 = topStylesByCost(scopedRows, 5);
   const rowsHtml = top5.map(([style, e]) => {
     const isOpen = expandedChannelStyle === (scope + '|' + chan + '|' + style);
@@ -768,8 +1030,9 @@ function channelExpandRow(scope, chan, curRows) {
 function channelMixRows(curRows, priorRows, hasPrior, scope) {
   const byChan = new Map();
   curRows.forEach(r => {
-    if (!byChan.has(r.channel)) byChan.set(r.channel, { rev: 0, cost: 0, profit: 0 });
-    const e = byChan.get(r.channel);
+    const key = channelKey(r.channel);
+    if (!byChan.has(key)) byChan.set(key, { rev: 0, cost: 0, profit: 0 });
+    const e = byChan.get(key);
     e.rev += +r.revenue; e.cost += +r.cost; e.profit += +r.profit;
   });
   const totalRev = [...byChan.values()].reduce((s, e) => s + e.rev, 0);
@@ -805,12 +1068,16 @@ function renderCategory(cat) {
   const cur = agg(curRows), prior = agg(priorRows);
   const hasPrior = priorRows.length > 0;
 
+  const fifthKpi = costBasis === 'unloaded'
+    ? loadedUnloadedDiffKpi(rawRowsFor(selectedPeriod.cur, cat))
+    : kpiCard('Invoices', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null);
+
   const kpis = [
     kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard('HB COGS', fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
+    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
     kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
     kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
-    kpiCard('Invoices', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null),
+    fifthKpi,
   ].join('');
 
   const channelRows = channelMixRows(curRows, priorRows, hasPrior, cat);
