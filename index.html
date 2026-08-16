@@ -389,20 +389,41 @@ function showApp() {
   loadData();
 }
 
+// A stored session can outlive its own validity (expired/revoked token) —
+// getSession() returns it without checking, so the page skips the password
+// screen but every query after that fails. Recover by dropping the bad
+// session and sending the user back to a fresh login instead of leaving a
+// permanently blank page (a hard refresh alone doesn't help — the bad
+// session lives in localStorage, not page cache).
+async function recoverFromBadSession(message) {
+  await sb.auth.signOut();
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('gate').style.display = 'flex';
+  document.getElementById('gate-err').textContent = message || 'Your session expired — please sign in again.';
+}
+
 // ---------------- data load ----------------
 async function loadData() {
-  const { data: refreshRows } = await sb.from('hb_refresh_log').select('*').order('refreshed_at', { ascending: false }).limit(1);
+  const { data: refreshRows, error: refreshLogErr } = await sb.from('hb_refresh_log').select('*').order('refreshed_at', { ascending: false }).limit(1);
   const refreshed = refreshRows && refreshRows[0];
 
   let rows = [];
+  let loadError = refreshLogErr || null;
   const PAGE = 1000;
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await sb.from('hb_lines').select('*').range(from, from + PAGE - 1);
-    if (error) { console.error(error); break; }
+    if (error) { loadError = error; console.error(error); break; }
     if (!data || data.length === 0) break;
     rows = rows.concat(data);
     if (data.length < PAGE) break;
   }
+
+  if (loadError || rows.length === 0) {
+    console.error('Data load failed or returned empty:', loadError);
+    await recoverFromBadSession('Could not load data (your session may have expired) — please sign in again.');
+    return;
+  }
+
   RAW_ROWS = rows;
   applyCostBasis();
 
@@ -482,6 +503,7 @@ const monthLabel = (y, m) => `${MONTH_NAMES[m - 1]} ${y}`;
 const monthInputVal = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
 
 function renderPeriodSelect() {
+  if (!selectedPeriod) return; // no data loaded — nothing to populate the selector with
   const sel = document.getElementById('period-select');
   sel.innerHTML = PERIODS.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
   sel.value = selectedPeriod.key;
