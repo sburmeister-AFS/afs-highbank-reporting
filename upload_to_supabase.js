@@ -60,6 +60,7 @@ const toDate = (yyyymmdd) => {
       channel: L.bd,
       store: job ? job.store : null,
       style: stripTrailingNotation(L.style),
+      color: stripTrailingNotation(L.color),
       supplier: L.sup,
       qty: L.qty,
       cost: L.cost,

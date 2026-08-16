@@ -158,9 +158,9 @@
   .stat-pair .stat .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
   .stat-pair .stat .value { font-size: 18px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
-  tr.cat-row { cursor: pointer; }
-  tr.cat-row:hover td { background: var(--page); }
-  tr.cat-row .chev { display: inline-block; width: 10px; font-size: 10px; color: var(--text-muted); }
+  tr.cat-row, tr.style-row { cursor: pointer; }
+  tr.cat-row:hover td, tr.style-row:hover td.sub { background: var(--gridline); }
+  tr.cat-row .chev, tr.style-row .chev { display: inline-block; width: 10px; font-size: 10px; color: var(--text-muted); }
   tr.cat-expand td { background: var(--page); padding: 10px 12px 14px 30px; }
   tr.cat-expand table { background: transparent; }
   tr.cat-expand th { padding: 5px 10px; }
@@ -232,6 +232,7 @@ let PERIODS = [];       // [{key, label, year, months:[1..n]}]
 let selectedPeriod = null;
 let activeTab = 'overall';
 let expandedCategory = null;
+let expandedStyle = null; // key: `${cat}|${style}`
 
 // ---------------- formatting ----------------
 const fmt$ = (n) => {
@@ -361,17 +362,27 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   if (!btn) return;
   activeTab = btn.dataset.tab;
   expandedCategory = null;
+  expandedStyle = null;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
   render();
 });
 
-// ---------------- category drill-down (Overall tab) ----------------
+// ---------------- category / style drill-down (Overall tab) ----------------
 document.getElementById('content').addEventListener('click', (e) => {
-  const row = e.target.closest('tr.cat-row');
-  if (!row) return;
-  const cat = row.dataset.cat;
-  expandedCategory = expandedCategory === cat ? null : cat;
-  render();
+  const styleRow = e.target.closest('tr.style-row');
+  if (styleRow) {
+    const key = styleRow.dataset.cat + '|' + styleRow.dataset.style;
+    expandedStyle = expandedStyle === key ? null : key;
+    render();
+    return;
+  }
+  const catRow = e.target.closest('tr.cat-row');
+  if (catRow) {
+    const cat = catRow.dataset.cat;
+    expandedStyle = null;
+    expandedCategory = expandedCategory === cat ? null : cat;
+    render();
+  }
 });
 
 function topStylesByCost(rows, n) {
@@ -384,15 +395,48 @@ function topStylesByCost(rows, n) {
   return [...m.entries()].sort((a, b) => b[1].cost - a[1].cost).slice(0, n);
 }
 
-function categoryExpandRow(cat, curRows) {
-  const top5 = topStylesByCost(curRows.filter(r => r.category === cat), 5);
-  const rowsHtml = top5.map(([style, e]) => `<tr>
-    <td class="sub">${style}</td>
+function topColorsByCost(rows, n) {
+  const m = new Map();
+  rows.forEach(r => {
+    const c = r.color || '(none)';
+    if (!m.has(c)) m.set(c, { qty: 0, cost: 0, rev: 0, profit: 0 });
+    const e = m.get(c);
+    e.qty += +r.qty; e.cost += +r.cost; e.rev += +r.revenue; e.profit += +r.profit;
+  });
+  return [...m.entries()].sort((a, b) => b[1].cost - a[1].cost).slice(0, n);
+}
+
+function styleColorExpandRow(cat, style, curRows) {
+  const top5 = topColorsByCost(curRows.filter(r => r.category === cat && r.style === style), 5);
+  const rowsHtml = top5.map(([color, e]) => `<tr>
+    <td class="sub">${color}</td>
     <td class="sub num">${fmt$(e.cost)}</td>
     <td class="sub num">${fmtNum(e.qty)}</td>
     <td class="sub num">${fmt$(e.rev)}</td>
     <td class="sub num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
-  </tr>`).join('') || `<tr><td class="sub" colspan="5">No lines for ${cat} in this period.</td></tr>`;
+  </tr>`).join('') || `<tr><td class="sub" colspan="5">No color data for this style.</td></tr>`;
+  return `<tr class="cat-expand"><td colspan="5" style="padding-left:44px;">
+    <div class="sub-title">Top 5 Colors — ${style}</div>
+    <table>
+      <thead><tr><th>Color</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </td></tr>`;
+}
+
+function categoryExpandRow(cat, curRows) {
+  const top5 = topStylesByCost(curRows.filter(r => r.category === cat), 5);
+  const rowsHtml = top5.map(([style, e]) => {
+    const isOpen = expandedStyle === (cat + '|' + style);
+    const row = `<tr class="style-row" data-cat="${cat}" data-style="${style.replace(/"/g, '&quot;')}">
+      <td class="sub"><span class="chev">${isOpen ? '▾' : '▸'}</span>${style}</td>
+      <td class="sub num">${fmt$(e.cost)}</td>
+      <td class="sub num">${fmtNum(e.qty)}</td>
+      <td class="sub num">${fmt$(e.rev)}</td>
+      <td class="sub num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+    </tr>`;
+    return row + (isOpen ? styleColorExpandRow(cat, style, curRows) : '');
+  }).join('') || `<tr><td class="sub" colspan="5">No lines for ${cat} in this period.</td></tr>`;
   return `<tr class="cat-expand"><td colspan="6">
     <div class="sub-title">Top 5 ${cat} Products by COGS</div>
     <table>
