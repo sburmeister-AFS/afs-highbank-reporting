@@ -160,6 +160,8 @@
 
   .empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; }
   footer.foot { margin-top: 40px; font-size: 11px; color: var(--text-muted); }
+  .imputed-note { font-size: 11.5px; color: var(--text-muted); margin: -10px 0 20px; }
+  .imputed-note strong { color: var(--text-secondary); }
 </style>
 </head>
 <body>
@@ -196,7 +198,7 @@
 
     <div id="content"></div>
 
-    <footer class="foot">Highbank-line basis (delivered sales, NORMAL service type, bundled-invoice revenue imputed to whole-job margin). * = period includes imputed revenue.</footer>
+    <footer class="foot">Highbank-line basis (delivered sales, NORMAL service type). Bundled-invoice lines are imputed to whole-job margin — see the note under each period's KPIs for the exact share.</footer>
   </div>
 </div>
 
@@ -361,6 +363,20 @@ function render() {
   else content.innerHTML = renderCategory(activeTab);
 }
 
+function imputedNote(rows) {
+  if (rows.length === 0) return '';
+  const imputedRows = rows.filter(r => r.is_imputed);
+  if (imputedRows.length === 0) return `<div class="imputed-note">No imputed-revenue lines in this period — every figure is actual billed revenue/profit.</div>`;
+  const totalRev = rows.reduce((s, r) => s + (+r.revenue), 0);
+  const imputedRev = imputedRows.reduce((s, r) => s + (+r.revenue), 0);
+  const lineShare = imputedRows.length / rows.length;
+  const revShare = totalRev > 0 ? imputedRev / totalRev : 0;
+  return `<div class="imputed-note">
+    <strong>${fmtPct(lineShare)}</strong> of HB lines (<strong>${fmtPct(revShare)}</strong> of revenue) in this period are on bundled invoices —
+    their revenue/margin is imputed from whole-job margin rather than actual billing. The rest is actual billed revenue.
+  </div>`;
+}
+
 function kpiCard(label, valueText, delta) {
   return `<div class="kpi">
     <div class="label">${label}</div>
@@ -401,6 +417,7 @@ function renderOverall() {
 
   return `
     <div class="kpi-row">${kpis}</div>
+    ${imputedNote(curRows)}
     <div class="two-col">
       <div>
         <h2 class="section">Category Contribution</h2>
@@ -517,6 +534,7 @@ function renderCategory(cat) {
 
   return `
     <div class="kpi-row">${kpis}</div>
+    ${imputedNote(curRows)}
     <div class="two-col">
       <div>
         <h2 class="section">Top Styles</h2>
