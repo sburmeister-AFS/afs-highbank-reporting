@@ -24,6 +24,17 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
+// Strips trailing inventory-availability notations like "(STOCK)" /
+// "(NON STOCK COLORS)" / "(STOCK COLOR)" that RFMS appends to style names —
+// these aren't part of the product identity, just availability metadata.
+// Repeats in case more than one trails the name.
+const stripTrailingNotation = (s) => {
+  let n = String(s || '').trim();
+  let prev;
+  do { prev = n; n = n.replace(/\s*\([^()]*\)\s*$/, '').trim(); } while (n !== prev);
+  return n || String(s || '').trim();
+};
+
 const toDate = (yyyymmdd) => {
   if (yyyymmdd == null) return null;
   const s = String(yyyymmdd);
@@ -48,7 +59,7 @@ const toDate = (yyyymmdd) => {
       category: L.cat,
       channel: L.bd,
       store: job ? job.store : null,
-      style: L.style,
+      style: stripTrailingNotation(L.style),
       supplier: L.sup,
       qty: L.qty,
       cost: L.cost,

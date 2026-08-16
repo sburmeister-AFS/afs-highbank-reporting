@@ -158,6 +158,15 @@
   .stat-pair .stat .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
   .stat-pair .stat .value { font-size: 18px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
+  tr.cat-row { cursor: pointer; }
+  tr.cat-row:hover td { background: var(--page); }
+  tr.cat-row .chev { display: inline-block; width: 10px; font-size: 10px; color: var(--text-muted); }
+  tr.cat-expand td { background: var(--page); padding: 10px 12px 14px 30px; }
+  tr.cat-expand table { background: transparent; }
+  tr.cat-expand th { padding: 5px 10px; }
+  tr.cat-expand td.sub { padding: 5px 10px; border-bottom: 1px solid var(--gridline); }
+  tr.cat-expand .sub-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; }
+
   .empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; }
   footer.foot { margin-top: 40px; font-size: 11px; color: var(--text-muted); }
   .imputed-note { font-size: 11.5px; color: var(--text-muted); margin: -10px 0 20px; }
@@ -222,6 +231,7 @@ let ALL_ROWS = [];
 let PERIODS = [];       // [{key, label, year, months:[1..n]}]
 let selectedPeriod = null;
 let activeTab = 'overall';
+let expandedCategory = null;
 
 // ---------------- formatting ----------------
 const fmt$ = (n) => {
@@ -350,9 +360,47 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-tab]');
   if (!btn) return;
   activeTab = btn.dataset.tab;
+  expandedCategory = null;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
   render();
 });
+
+// ---------------- category drill-down (Overall tab) ----------------
+document.getElementById('content').addEventListener('click', (e) => {
+  const row = e.target.closest('tr.cat-row');
+  if (!row) return;
+  const cat = row.dataset.cat;
+  expandedCategory = expandedCategory === cat ? null : cat;
+  render();
+});
+
+function topStylesByCost(rows, n) {
+  const m = new Map();
+  rows.forEach(r => {
+    if (!m.has(r.style)) m.set(r.style, { qty: 0, cost: 0, rev: 0, profit: 0 });
+    const e = m.get(r.style);
+    e.qty += +r.qty; e.cost += +r.cost; e.rev += +r.revenue; e.profit += +r.profit;
+  });
+  return [...m.entries()].sort((a, b) => b[1].cost - a[1].cost).slice(0, n);
+}
+
+function categoryExpandRow(cat, curRows) {
+  const top5 = topStylesByCost(curRows.filter(r => r.category === cat), 5);
+  const rowsHtml = top5.map(([style, e]) => `<tr>
+    <td class="sub">${style}</td>
+    <td class="sub num">${fmt$(e.cost)}</td>
+    <td class="sub num">${fmtNum(e.qty)}</td>
+    <td class="sub num">${fmt$(e.rev)}</td>
+    <td class="sub num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+  </tr>`).join('') || `<tr><td class="sub" colspan="5">No lines for ${cat} in this period.</td></tr>`;
+  return `<tr class="cat-expand"><td colspan="6">
+    <div class="sub-title">Top 5 ${cat} Products by COGS</div>
+    <table>
+      <thead><tr><th>Style</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </td></tr>`;
+}
 
 // ---------------- render ----------------
 function render() {
@@ -403,14 +451,16 @@ function renderOverall() {
     const c = agg(curRows.filter(r => r.category === cat));
     const p = agg(priorRows.filter(r => r.category === cat));
     const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
-    return `<tr>
-      <td><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${CAT_COLOR[cat]};margin-right:7px;"></span>${cat}</td>
+    const isOpen = expandedCategory === cat;
+    const row = `<tr class="cat-row" data-cat="${cat}">
+      <td><span class="chev">${isOpen ? '▾' : '▸'}</span><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${CAT_COLOR[cat]};margin-right:7px;"></span>${cat}</td>
       <td class="num">${fmt$(c.rev)}</td>
       <td class="num">${fmt$(c.cost)}</td>
       <td class="num">${fmt$(c.profit)}</td>
       <td class="num">${fmtPct(c.margin)}</td>
       <td class="num">${d ? `<span class="${d.cls === 'good' ? 'status-good' : d.cls === 'bad' ? 'status-bad' : ''}">${d.text}</span>` : '–'}</td>
     </tr>`;
+    return row + (isOpen ? categoryExpandRow(cat, curRows) : '');
   }).join('');
 
   const channelRows = channelMixRows(curRows, priorRows, hasPrior);
