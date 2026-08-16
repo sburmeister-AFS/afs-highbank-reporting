@@ -72,7 +72,7 @@ const toDate = (yyyymmdd) => {
       category: L.cat,
       channel: L.bd,
       store: job ? job.store : null,
-      style: stripTrailingNotation(L.style),
+      style: L.qs ? '*' + stripTrailingNotation(L.style) : stripTrailingNotation(L.style),
       color: cleanColor(L.color),
       supplier: L.sup,
       qty: L.qty,
