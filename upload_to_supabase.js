@@ -110,8 +110,43 @@ const toDate = (yyyymmdd) => {
   }
   console.log('');
 
+  // hb_jobs: whole-invoice totals for every HB-touched NORMAL invoice — the
+  // "total revenue of all sales on an invoice with Highbank on it" view,
+  // as opposed to hb_lines' Highbank-line-only figures.
+  const jobRows = jobs.map((j) => {
+    const dd = j.deliveredDate ? String(j.deliveredDate) : null;
+    return {
+      invoice: j.invoice,
+      del_year: dd ? +dd.slice(0, 4) : null,
+      del_month: dd ? +dd.slice(4, 6) : null,
+      del_date: toDate(j.deliveredDate),
+      dominant_category: j.dominantCat,
+      channel: j.bigDiv,
+      store: normalizeStore(j.store),
+      job_revenue: j.jobRevenue,
+      job_cost: j.jobCost,
+      job_unloaded_cost: j.jobUnloadedCost,
+      job_profit: j.jobProfit,
+      job_qty: j.jobQty,
+      bundled_line_count: j.bundledLines,
+    };
+  }).filter((r) => r.del_year != null && r.del_month != null);
+
+  console.log(`Prepared ${jobRows.length.toLocaleString()} job rows (of ${jobs.length.toLocaleString()} invoices).`);
+  console.log('Clearing existing hb_jobs rows...');
+  const { error: delJobsErr } = await supabase.from('hb_jobs').delete().neq('id', 0);
+  if (delJobsErr) { console.error('Delete failed:', delJobsErr); process.exit(1); }
+
+  for (let i = 0; i < jobRows.length; i += BATCH) {
+    const batch = jobRows.slice(i, i + BATCH);
+    const { error } = await supabase.from('hb_jobs').insert(batch);
+    if (error) { console.error(`Insert failed at row ${i}:`, error); process.exit(1); }
+    process.stdout.write(`\r  inserted ${Math.min(i + BATCH, jobRows.length).toLocaleString()} / ${jobRows.length.toLocaleString()}`);
+  }
+  console.log('');
+
   const { error: logErr } = await supabase.from('hb_refresh_log').insert({ line_count: rows.length });
   if (logErr) { console.error('Refresh log insert failed:', logErr); process.exit(1); }
 
-  console.log(`Done. Uploaded ${rows.length.toLocaleString()} lines.`);
+  console.log(`Done. Uploaded ${rows.length.toLocaleString()} lines and ${jobRows.length.toLocaleString()} jobs.`);
 })();

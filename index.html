@@ -148,6 +148,8 @@
   .kpi .delta { font-size: 11.5px; margin-top: 5px; font-weight: 600; color: var(--text-muted); }
   .kpi .delta.good { color: var(--good); }
   .kpi .delta.bad { color: var(--critical); }
+  .kpi.kpi-flippable { cursor: pointer; }
+  .kpi.kpi-flippable:hover { border-color: var(--accent); }
 
   h2.section { font-size: 13px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted); margin: 26px 0 10px; }
 
@@ -311,6 +313,8 @@ const DIVISIONS = ['RETAIL', 'WHOLESALE', 'BUILDER', 'PROPERTY MGMT', 'E-COMMERC
 const divisionLabel = (d) => d === 'Other' ? 'Other' : titleCase(d);
 
 let RAW_ROWS = []; // as fetched from Supabase — both loaded and unloaded fields present
+let RAW_JOBS = []; // whole-invoice totals (hb_jobs) for HB-touched invoices
+let kpiFlipped = false; // click any of the 4 flippable KPI cards to flip all of them together, HB-line <-> whole-job view
 let ALL_ROWS = [];  // RAW_ROWS remapped to the active cost basis (cost/revenue/profit)
 let costBasis = 'loaded'; // 'loaded' | 'unloaded'
 let PERIODS = [];       // [{key, label, year, months:[1..n]}]
@@ -426,6 +430,24 @@ async function loadData() {
 
   RAW_ROWS = rows;
   applyCostBasis();
+
+  // hb_jobs (whole-invoice totals) power the KPI-card flip to "total revenue
+  // of all sales on an invoice with Highbank on it" — best-effort: if it
+  // fails, the HB-line view still works, the flip just won't have data.
+  try {
+    let jobRows = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb.from('hb_jobs').select('*').range(from, from + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      jobRows = jobRows.concat(data);
+      if (data.length < PAGE) break;
+    }
+    RAW_JOBS = jobRows;
+  } catch (e) {
+    console.error('hb_jobs load failed (whole-job KPI flip unavailable):', e);
+    RAW_JOBS = [];
+  }
 
   // "Data through <date>" is the last actual delivered-sales date in the
   // data — what a reader means by "how current is this" — not just the
@@ -596,6 +618,50 @@ function agg(rows) {
   return a;
 }
 
+// ---------------- whole-job (flip) view ----------------
+// hb_jobs holds one row per HB-touched invoice — total revenue/cost of
+// EVERYTHING on that invoice, not just the Highbank line(s). "Category" for
+// a job is its dominant category (most HB cost); a job has no single
+// channel/style breakdown the way hb_lines does, so the flip only applies
+// to the four whole-number KPI cards (Revenue/COGS/Profit/Margin).
+function jobsFor(range, cat) {
+  if (!range) return [];
+  const lo = ymIdx(range.fromY, range.fromM), hi = ymIdx(range.toY, range.toM);
+  return RAW_JOBS.filter(r => {
+    const idx = ymIdx(r.del_year, r.del_month);
+    return idx >= lo && idx <= hi && (!cat || r.dominant_category === cat);
+  });
+}
+
+function aggJobs(rows) {
+  const revenue = rows.reduce((s, r) => s + (+r.job_revenue), 0);
+  const cost = rows.reduce((s, r) => s + (costBasis === 'loaded' ? +r.job_cost : +r.job_unloaded_cost), 0);
+  const profit = revenue - cost;
+  return {
+    rev: revenue, cost, profit,
+    margin: revenue > 0 ? profit / revenue : null,
+    qty: rows.reduce((s, r) => s + (+r.job_qty), 0),
+    invCount: rows.length,
+  };
+}
+
+// One shared flip state per metric, used everywhere a KPI row appears —
+// flipping "Revenue" on the Overall tab stays flipped on a category tab too.
+function kpiValDelta(cur, prior, fmtFn, hasPrior, deltaFn) {
+  return { value: fmtFn(cur), delta: hasPrior ? deltaFn(cur, prior) : null };
+}
+
+function flippableKpiCard(metricKey, hbLabel, hb, jobLabel, job) {
+  const label = (kpiFlipped ? jobLabel : hbLabel) + (RAW_JOBS.length ? ' ⇄' : '');
+  const value = kpiFlipped ? job.value : hb.value;
+  const delta = kpiFlipped ? job.delta : hb.delta;
+  return `<div class="kpi kpi-flippable" title="Click to switch between Highbank-line and whole-job totals">
+    <div class="label">${label}</div>
+    <div class="value">${value}</div>
+    ${delta ? `<div class="delta ${delta.cls}">${delta.text}</div>` : ''}
+  </div>`;
+}
+
 // ---------------- tabs ----------------
 document.getElementById('tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-tab]');
@@ -704,6 +770,12 @@ document.getElementById('content').addEventListener('click', (e) => {
   const weekAvgBtn = e.target.closest('button.week-avg-btn');
   if (weekAvgBtn) {
     weekAvgWindow = +weekAvgBtn.dataset.window;
+    render();
+    return;
+  }
+  const flipCard = e.target.closest('.kpi-flippable');
+  if (flipCard) {
+    kpiFlipped = !kpiFlipped;
     render();
     return;
   }
@@ -940,13 +1012,18 @@ function renderChannelReview(chan) {
   const rawCurAll = rawRowsFor(selectedPeriod.cur).filter(r => channelMatch(r, chan));
   const fifthKpi = costBasis === 'unloaded'
     ? loadedUnloadedDiffKpi(rawCurAll)
-    : kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null);
+    : kpiCard('# of Orders', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null);
+
+  const curJobs = jobsFor(selectedPeriod.cur).filter(r => channelMatch(r, chan));
+  const priorJobs = jobsFor(selectedPeriod.prior).filter(r => channelMatch(r, chan));
+  const curJ = aggJobs(curJobs), priorJ = aggJobs(priorJobs);
+  const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
-    kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
-    kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
@@ -1015,13 +1092,18 @@ function renderStoreReview(storeCode) {
   const rawCurAll = rawRowsFor(selectedPeriod.cur).filter(r => r.store === storeCode);
   const fifthKpi = costBasis === 'unloaded'
     ? loadedUnloadedDiffKpi(rawCurAll)
-    : kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null);
+    : kpiCard('# of Orders', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null);
+
+  const curJobs = jobsFor(selectedPeriod.cur).filter(r => r.store === storeCode);
+  const priorJobs = jobsFor(selectedPeriod.prior).filter(r => r.store === storeCode);
+  const curJ = aggJobs(curJobs), priorJ = aggJobs(priorJobs);
+  const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
-    kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
-    kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
@@ -1389,13 +1471,18 @@ function renderOverall() {
 
   const fifthKpi = costBasis === 'unloaded'
     ? loadedUnloadedDiffKpi(rawRowsFor(selectedPeriod.cur))
-    : kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null);
+    : kpiCard('# of Orders', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null);
+
+  const curJobs = jobsFor(selectedPeriod.cur);
+  const priorJobs = jobsFor(selectedPeriod.prior);
+  const curJ = aggJobs(curJobs), priorJ = aggJobs(priorJobs);
+  const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
-    kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
-    kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
@@ -1645,13 +1732,18 @@ function renderCategory(cat) {
 
   const fifthKpi = costBasis === 'unloaded'
     ? loadedUnloadedDiffKpi(rawRowsFor(selectedPeriod.cur, cat))
-    : kpiCard('Invoices', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null);
+    : kpiCard('# of Orders', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null);
+
+  const curJobs = jobsFor(selectedPeriod.cur, cat);
+  const priorJobs = jobsFor(selectedPeriod.prior, cat);
+  const curJ = aggJobs(curJobs), priorJ = aggJobs(priorJobs);
+  const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
-    kpiCard(`HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
-    kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
-    kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
