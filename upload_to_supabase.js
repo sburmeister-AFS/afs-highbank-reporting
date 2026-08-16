@@ -25,14 +25,15 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 });
 
 // Strips trailing inventory-availability notations like "(STOCK)" /
-// "(NON STOCK COLORS)" / "(STOCK COLOR)" that RFMS appends to style names —
-// these aren't part of the product identity, just availability metadata.
-// Repeats in case more than one trails the name.
+// "(NON STOCK COLORS)" / "(M STOCK) <garbled encoding artifact>" that RFMS
+// appends to style/color names — these aren't part of the product identity,
+// just availability metadata. Everything from the first "(" onward is
+// dropped (some notations have extra text, sometimes mis-encoded, trailing
+// the closing paren, so trimming only a well-formed "(...)" isn't enough).
 const stripTrailingNotation = (s) => {
-  let n = String(s || '').trim();
-  let prev;
-  do { prev = n; n = n.replace(/\s*\([^()]*\)\s*$/, '').trim(); } while (n !== prev);
-  return n || String(s || '').trim();
+  const raw = String(s || '').trim();
+  const n = raw.replace(/\s*\(.*$/, '').trim();
+  return n || raw;
 };
 
 const toDate = (yyyymmdd) => {
