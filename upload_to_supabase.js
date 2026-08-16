@@ -36,6 +36,18 @@ const stripTrailingNotation = (s) => {
   return n || raw;
 };
 
+// Same cleanup as stripTrailingNotation, but for colors: a "(NON STOCKING)" /
+// "(NON STOCK)" notation isn't dropped silently — it's a real signal (this
+// color must be special-ordered), so it's kept as a trailing "*" instead of
+// being erased. Plain availability notations like "(STOCK 1/2/3/5)" (which
+// store numbers carry it) still get dropped — only the non-stock flag survives.
+const cleanColor = (s) => {
+  const raw = String(s || '').trim();
+  const isNonStock = /\(\s*NON[\s-]?STOCK/i.test(raw);
+  const n = raw.replace(/\s*\(.*$/, '').trim() || raw;
+  return isNonStock ? n + '*' : n;
+};
+
 const toDate = (yyyymmdd) => {
   if (yyyymmdd == null) return null;
   const s = String(yyyymmdd);
@@ -61,7 +73,7 @@ const toDate = (yyyymmdd) => {
       channel: L.bd,
       store: job ? job.store : null,
       style: stripTrailingNotation(L.style),
-      color: stripTrailingNotation(L.color),
+      color: cleanColor(L.color),
       supplier: L.sup,
       qty: L.qty,
       cost: L.cost,

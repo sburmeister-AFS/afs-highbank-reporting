@@ -102,11 +102,13 @@
   }
   header.top h1 { font-size: 22px; margin: 0; letter-spacing: -0.2px; }
   header.top .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-  .controls { display: flex; gap: 8px; align-items: center; }
-  select, .btn {
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  select, .btn, input[type="month"] {
     font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--gridline);
-    background: var(--surface-1); color: var(--text-primary);
+    background: var(--surface-1); color: var(--text-primary); font-family: inherit;
   }
+  .custom-range { display: flex; align-items: center; gap: 6px; }
+  .custom-range span { font-size: 12px; color: var(--text-muted); }
 
   nav.tabs {
     display: flex; gap: 4px; border-bottom: 1px solid var(--gridline); margin-bottom: 20px;
@@ -152,15 +154,29 @@
 
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   @media (max-width: 820px) { .two-col { grid-template-columns: 1fr; } }
+  .three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 4px; }
+  @media (max-width: 1000px) { .three-col { grid-template-columns: 1fr; } }
+
+  .review-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .review-header .btn { cursor: pointer; }
+  .review-title { font-size: 18px; font-weight: 700; margin: 0; }
+
+  .cat-pills { display: flex; gap: 6px; margin: 4px 0 12px; }
+  .cat-pill {
+    font-size: 13px; font-weight: 600; padding: 7px 16px; border-radius: 999px;
+    border: 1px solid var(--gridline); background: var(--surface-1); color: var(--text-secondary);
+    cursor: pointer;
+  }
+  .cat-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .stat-pair { display: flex; gap: 20px; margin-top: 4px; }
   .stat-pair .stat { flex: 1; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
   .stat-pair .stat .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
   .stat-pair .stat .value { font-size: 18px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
-  tr.cat-row, tr.style-row { cursor: pointer; }
-  tr.cat-row:hover td, tr.style-row:hover td.sub { background: var(--gridline); }
-  tr.cat-row .chev, tr.style-row .chev { display: inline-block; width: 10px; font-size: 10px; color: var(--text-muted); }
+  tr.cat-row, tr.style-row, tr.chan-row, tr.review-style-row { cursor: pointer; }
+  tr.cat-row:hover td, tr.style-row:hover td.sub, tr.chan-row:hover td, tr.review-style-row:hover td { background: var(--gridline); }
+  tr.cat-row .chev, tr.style-row .chev, tr.chan-row .chev, tr.review-style-row .chev { display: inline-block; width: 10px; font-size: 10px; color: var(--text-muted); }
   tr.cat-expand td { background: var(--page); padding: 10px 12px 14px 30px; }
   tr.cat-expand table { background: transparent; }
   tr.cat-expand th { padding: 5px 10px; }
@@ -194,6 +210,11 @@
       </div>
       <div class="controls">
         <select id="period-select"></select>
+        <div id="custom-range" class="custom-range" style="display:none;">
+          <input type="month" id="range-from" />
+          <span>to</span>
+          <input type="month" id="range-to" />
+        </div>
       </div>
     </header>
 
@@ -207,7 +228,7 @@
 
     <div id="content"></div>
 
-    <footer class="foot">Highbank-line basis (delivered sales, NORMAL service type). Bundled-invoice lines are imputed to whole-job margin — see the note under each period's KPIs for the exact share.</footer>
+    <footer class="foot">Highbank-line basis (delivered sales, NORMAL service type). Bundled-invoice lines are imputed to whole-job margin — see the note under each period's KPIs for the exact share. A trailing <strong>*</strong> on a color name means that color is non-stock (special order).</footer>
   </div>
 </div>
 
@@ -233,6 +254,11 @@ let selectedPeriod = null;
 let activeTab = 'overall';
 let expandedCategory = null;
 let expandedStyle = null; // key: `${cat}|${style}`
+let expandedChannel = null; // key: `${scope}|${channel}`
+let expandedChannelStyle = null; // key: `${scope}|${channel}|${style}`
+let channelReviewOf = null; // channel name, or null — full-page channel review
+let channelReviewCat = null; // which category pill is active within the channel review
+let reviewExpandedStyle = null; // style name expanded (all colors) within the review's Products table
 
 // ---------------- formatting ----------------
 const fmt$ = (n) => {
@@ -311,40 +337,98 @@ async function loadData() {
   render();
 }
 
+let DATA_MIN = null, DATA_MAX = null; // {y, m} bounds of available data
+
 function buildPeriods() {
   const years = [...new Set(ALL_ROWS.map(r => r.del_year))].sort((a, b) => b - a);
   if (years.length === 0) { PERIODS = []; return; }
   const maxYear = years[0];
   const maxMonth = Math.max(...ALL_ROWS.filter(r => r.del_year === maxYear).map(r => r.del_month));
+  const minYear = years[years.length - 1];
+  const minMonth = Math.min(...ALL_ROWS.filter(r => r.del_year === minYear).map(r => r.del_month));
+  DATA_MIN = { y: minYear, m: minMonth };
+  DATA_MAX = { y: maxYear, m: maxMonth };
 
   PERIODS = [];
   PERIODS.push({
     key: 'ytd', label: `${maxYear} YTD (thru month ${maxMonth})`,
-    cur: { year: maxYear, months: range(1, maxMonth) },
-    prior: { year: maxYear - 1, months: range(1, maxMonth) },
+    cur: { fromY: maxYear, fromM: 1, toY: maxYear, toM: maxMonth },
+    prior: { fromY: maxYear - 1, fromM: 1, toY: maxYear - 1, toM: maxMonth },
   });
   years.forEach(y => {
     PERIODS.push({
       key: 'fy' + y, label: `${y} Full Year`,
-      cur: { year: y, months: range(1, 12) },
-      prior: { year: y - 1, months: range(1, 12) },
+      cur: { fromY: y, fromM: 1, toY: y, toM: 12 },
+      prior: { fromY: y - 1, fromM: 1, toY: y - 1, toM: 12 },
     });
   });
+  PERIODS.push({
+    key: 'ltd', label: 'Life to Date',
+    cur: { fromY: DATA_MIN.y, fromM: DATA_MIN.m, toY: DATA_MAX.y, toM: DATA_MAX.m },
+    prior: null,
+  });
+  PERIODS.push({ key: 'custom', label: 'Custom Range…' });
   selectedPeriod = PERIODS[0];
 }
-function range(a, b) { const out = []; for (let i = a; i <= b; i++) out.push(i); return out; }
+
+const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const monthLabel = (y, m) => `${MONTH_NAMES[m - 1]} ${y}`;
+const monthInputVal = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
 
 function renderPeriodSelect() {
   const sel = document.getElementById('period-select');
   sel.innerHTML = PERIODS.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
+  sel.value = selectedPeriod.key;
+
   sel.addEventListener('change', () => {
-    selectedPeriod = PERIODS.find(p => p.key === sel.value);
-    render();
+    const customEl = document.getElementById('custom-range');
+    if (sel.value === 'custom') {
+      customEl.style.display = 'flex';
+      const fromInput = document.getElementById('range-from');
+      const toInput = document.getElementById('range-to');
+      if (!fromInput.value) fromInput.value = monthInputVal(DATA_MIN.y, DATA_MIN.m);
+      if (!toInput.value) toInput.value = monthInputVal(DATA_MAX.y, DATA_MAX.m);
+      applyCustomRange();
+    } else {
+      customEl.style.display = 'none';
+      selectedPeriod = PERIODS.find(p => p.key === sel.value);
+      render();
+    }
+  });
+
+  ['range-from', 'range-to'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => {
+      if (sel.value === 'custom') applyCustomRange();
+    });
   });
 }
 
-function rowsFor(period, cat) {
-  const f = (r) => r.del_year === period.year && period.months.includes(r.del_month) && (!cat || r.category === cat);
+function applyCustomRange() {
+  const fromVal = document.getElementById('range-from').value;
+  const toVal = document.getElementById('range-to').value;
+  if (!fromVal || !toVal) return;
+  let [fy, fm] = fromVal.split('-').map(Number);
+  let [ty, tm] = toVal.split('-').map(Number);
+  if (ty * 12 + tm < fy * 12 + fm) { [fy, fm, ty, tm] = [ty, tm, fy, fm]; }
+  selectedPeriod = {
+    key: 'custom',
+    label: `${monthLabel(fy, fm)} – ${monthLabel(ty, tm)}`,
+    cur: { fromY: fy, fromM: fm, toY: ty, toM: tm },
+    prior: { fromY: fy - 1, fromM: fm, toY: ty - 1, toM: tm },
+  };
+  render();
+}
+
+function ymIdx(y, m) { return y * 12 + (m - 1); }
+
+function rowsFor(range, cat) {
+  if (!range) return [];
+  const lo = ymIdx(range.fromY, range.fromM);
+  const hi = ymIdx(range.toY, range.toM);
+  const f = (r) => {
+    const idx = ymIdx(r.del_year, r.del_month);
+    return idx >= lo && idx <= hi && (!cat || r.category === cat);
+  };
   return ALL_ROWS.filter(f);
 }
 
@@ -363,13 +447,63 @@ document.getElementById('tabs').addEventListener('click', (e) => {
   activeTab = btn.dataset.tab;
   expandedCategory = null;
   expandedStyle = null;
+  expandedChannel = null;
+  expandedChannelStyle = null;
+  channelReviewOf = null;
+  reviewExpandedStyle = null;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
   render();
 });
 
-// ---------------- category / style drill-down (Overall tab) ----------------
+// ---------------- category / channel / style / color drill-down ----------------
 document.getElementById('content').addEventListener('click', (e) => {
-  const styleRow = e.target.closest('tr.style-row');
+  const backBtn = e.target.closest('#channel-review-back');
+  if (backBtn) {
+    channelReviewOf = null;
+    reviewExpandedStyle = null;
+    render();
+    return;
+  }
+  const pillBtn = e.target.closest('button.cat-pill');
+  if (pillBtn) {
+    channelReviewCat = pillBtn.dataset.cat;
+    reviewExpandedStyle = null;
+    render();
+    return;
+  }
+  const reviewStyleRow = e.target.closest('tr.review-style-row');
+  if (reviewStyleRow) {
+    const style = reviewStyleRow.dataset.style;
+    reviewExpandedStyle = reviewExpandedStyle === style ? null : style;
+    render();
+    return;
+  }
+  const chanStyleRow = e.target.closest('tr.chan-style-row');
+  if (chanStyleRow) {
+    const key = chanStyleRow.dataset.scope + '|' + chanStyleRow.dataset.chan + '|' + chanStyleRow.dataset.style;
+    expandedChannelStyle = expandedChannelStyle === key ? null : key;
+    render();
+    return;
+  }
+  const chanRow = e.target.closest('tr.chan-row');
+  if (chanRow) {
+    const scope = chanRow.dataset.scope, chan = chanRow.dataset.chan;
+    const key = scope + '|' + chan;
+    if (expandedChannel === key) {
+      // second click on an already-expanded channel -> full-page review
+      channelReviewOf = chan;
+      channelReviewCat = null;
+      reviewExpandedStyle = null;
+      expandedChannel = null;
+      expandedChannelStyle = null;
+    } else {
+      expandedChannelStyle = null;
+      expandedChannel = key;
+    }
+    render();
+    return;
+  }
+  const styleRow = e.target.closest('tr.cat-style-row');
   if (styleRow) {
     const key = styleRow.dataset.cat + '|' + styleRow.dataset.style;
     expandedStyle = expandedStyle === key ? null : key;
@@ -406,36 +540,42 @@ function topColorsByCost(rows, n) {
   return [...m.entries()].sort((a, b) => b[1].cost - a[1].cost).slice(0, n);
 }
 
-function styleColorExpandRow(cat, style, curRows) {
-  const top5 = topColorsByCost(curRows.filter(r => r.category === cat && r.style === style), 5);
-  const rowsHtml = top5.map(([color, e]) => `<tr>
+function styleColorExpandRow(scopedRows, style, limit) {
+  limit = limit || 5;
+  const colorRows = scopedRows.filter(r => r.style === style);
+  const top = topColorsByCost(colorRows, limit);
+  const colorTotalCost = colorRows.reduce((s, r) => s + (+r.cost), 0);
+  const showShare = limit === Infinity;
+  const rowsHtml = top.map(([color, e]) => `<tr>
     <td class="sub">${color}</td>
     <td class="sub num">${fmt$(e.cost)}</td>
     <td class="sub num">${fmtNum(e.qty)}</td>
     <td class="sub num">${fmt$(e.rev)}</td>
     <td class="sub num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
-  </tr>`).join('') || `<tr><td class="sub" colspan="5">No color data for this style.</td></tr>`;
-  return `<tr class="cat-expand"><td colspan="5" style="padding-left:44px;">
-    <div class="sub-title">Top 5 Colors — ${style}</div>
+    ${showShare ? `<td class="sub num">${fmtPct(colorTotalCost > 0 ? e.cost / colorTotalCost : 0)}</td>` : ''}
+  </tr>`).join('') || `<tr><td class="sub" colspan="${showShare ? 6 : 5}">No color data for this style.</td></tr>`;
+  return `<tr class="cat-expand"><td colspan="${showShare ? 6 : 5}" style="padding-left:44px;">
+    <div class="sub-title">${limit === Infinity ? 'All' : 'Top ' + limit} Colors — ${style}</div>
     <table>
-      <thead><tr><th>Color</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th></tr></thead>
+      <thead><tr><th>Color</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th>${showShare ? '<th class="num">Share</th>' : ''}</tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>
   </td></tr>`;
 }
 
 function categoryExpandRow(cat, curRows) {
-  const top5 = topStylesByCost(curRows.filter(r => r.category === cat), 5);
+  const scopedRows = curRows.filter(r => r.category === cat);
+  const top5 = topStylesByCost(scopedRows, 5);
   const rowsHtml = top5.map(([style, e]) => {
     const isOpen = expandedStyle === (cat + '|' + style);
-    const row = `<tr class="style-row" data-cat="${cat}" data-style="${style.replace(/"/g, '&quot;')}">
+    const row = `<tr class="style-row cat-style-row" data-cat="${cat}" data-style="${style.replace(/"/g, '&quot;')}">
       <td class="sub"><span class="chev">${isOpen ? '▾' : '▸'}</span>${style}</td>
       <td class="sub num">${fmt$(e.cost)}</td>
       <td class="sub num">${fmtNum(e.qty)}</td>
       <td class="sub num">${fmt$(e.rev)}</td>
       <td class="sub num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
     </tr>`;
-    return row + (isOpen ? styleColorExpandRow(cat, style, curRows) : '');
+    return row + (isOpen ? styleColorExpandRow(scopedRows, style) : '');
   }).join('') || `<tr><td class="sub" colspan="5">No lines for ${cat} in this period.</td></tr>`;
   return `<tr class="cat-expand"><td colspan="6">
     <div class="sub-title">Top 5 ${cat} Products by COGS</div>
@@ -450,9 +590,80 @@ function categoryExpandRow(cat, curRows) {
 function render() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
+  if (channelReviewOf) { content.innerHTML = renderChannelReview(channelReviewOf); return; }
   if (activeTab === 'overall') content.innerHTML = renderOverall();
   else if (activeTab === 'leaderboard') content.innerHTML = renderLeaderboard();
   else content.innerHTML = renderCategory(activeTab);
+}
+
+function renderChannelReview(chan) {
+  const curAll = rowsFor(selectedPeriod.cur).filter(r => r.channel === chan);
+  const priorAll = rowsFor(selectedPeriod.prior).filter(r => r.channel === chan);
+  const cur = agg(curAll), prior = agg(priorAll);
+  const hasPrior = priorAll.length > 0;
+
+  const kpis = [
+    kpiCard('HB Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
+    kpiCard('HB COGS', fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
+    kpiCard('HB Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
+    kpiCard('HB Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    kpiCard('HB Lines', fmtNum(cur.lines), hasPrior ? fmtDelta(cur.lines, prior.lines) : null),
+  ].join('');
+
+  const catRows = CATS.map(cat => {
+    const c = agg(curAll.filter(r => r.category === cat));
+    const p = agg(priorAll.filter(r => r.category === cat));
+    const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
+    const share = cur.rev > 0 ? c.rev / cur.rev : 0;
+    return `<tr>
+      <td><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${CAT_COLOR[cat]};margin-right:7px;"></span>${cat}</td>
+      <td class="num">${fmt$(c.rev)}</td>
+      <td class="num">${fmt$(c.cost)}</td>
+      <td class="num">${fmt$(c.profit)}</td>
+      <td class="num">${fmtPct(c.margin)}</td>
+      <td class="num">${fmtPct(share)}</td>
+      <td class="num">${d ? `<span class="${d.cls === 'good' ? 'status-good' : d.cls === 'bad' ? 'status-bad' : ''}">${d.text}</span>` : '–'}</td>
+    </tr>`;
+  }).join('');
+
+  if (!channelReviewCat || !CATS.includes(channelReviewCat)) channelReviewCat = CATS[0];
+  const pillsHtml = CATS.map(cat => `<button class="cat-pill ${cat === channelReviewCat ? 'active' : ''}" data-cat="${cat}">${cat}</button>`).join('');
+
+  const catRowsForPill = curAll.filter(r => r.category === channelReviewCat);
+  const allStyles = topStylesByCost(catRowsForPill, Infinity);
+  const catTotalCost = catRowsForPill.reduce((s, r) => s + (+r.cost), 0);
+  const styleRowsHtml = allStyles.map(([style, e]) => {
+    const isOpen = reviewExpandedStyle === style;
+    const row = `<tr class="review-style-row" data-style="${style.replace(/"/g, '&quot;')}">
+      <td><span class="chev">${isOpen ? '▾' : '▸'}</span>${style}</td>
+      <td class="num">${fmt$(e.cost)}</td>
+      <td class="num">${fmtNum(e.qty)}</td>
+      <td class="num">${fmt$(e.rev)}</td>
+      <td class="num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+      <td class="num">${fmtPct(catTotalCost > 0 ? e.cost / catTotalCost : 0)}</td>
+    </tr>`;
+    return row + (isOpen ? styleColorExpandRow(catRowsForPill, style, Infinity) : '');
+  }).join('') || `<tr><td colspan="6" class="empty">No ${channelReviewCat} lines for ${titleCase(chan)} in this period.</td></tr>`;
+
+  return `
+    <div class="review-header">
+      <button id="channel-review-back" class="btn">← Back to Dashboard</button>
+      <h2 class="review-title">${titleCase(chan)} — Channel Review</h2>
+    </div>
+    <div class="kpi-row">${kpis}</div>
+    ${imputedNote(curAll)}
+    <h2 class="section">By Category</h2>
+    <table class="card">
+      <thead><tr><th>Category</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num">Share</th><th class="num">YoY Rev</th></tr></thead>
+      <tbody>${catRows}</tbody>
+    </table>
+    <h2 class="section">Products</h2>
+    <div class="cat-pills">${pillsHtml}</div>
+    <table class="card">
+      <thead><tr><th>Style</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th><th class="num">Share of COGS</th></tr></thead>
+      <tbody>${styleRowsHtml}</tbody>
+    </table>
+  `;
 }
 
 function imputedNote(rows) {
@@ -507,7 +718,7 @@ function renderOverall() {
     return row + (isOpen ? categoryExpandRow(cat, curRows) : '');
   }).join('');
 
-  const channelRows = channelMixRows(curRows, priorRows, hasPrior);
+  const channelRows = channelMixRows(curRows, priorRows, hasPrior, 'overall');
 
   return `
     <div class="kpi-row">${kpis}</div>
@@ -531,7 +742,30 @@ function renderOverall() {
   `;
 }
 
-function channelMixRows(curRows, priorRows, hasPrior) {
+function channelExpandRow(scope, chan, curRows) {
+  const scopedRows = curRows.filter(r => r.channel === chan);
+  const top5 = topStylesByCost(scopedRows, 5);
+  const rowsHtml = top5.map(([style, e]) => {
+    const isOpen = expandedChannelStyle === (scope + '|' + chan + '|' + style);
+    const row = `<tr class="style-row chan-style-row" data-scope="${scope}" data-chan="${chan.replace(/"/g, '&quot;')}" data-style="${style.replace(/"/g, '&quot;')}">
+      <td class="sub"><span class="chev">${isOpen ? '▾' : '▸'}</span>${style}</td>
+      <td class="sub num">${fmt$(e.cost)}</td>
+      <td class="sub num">${fmtNum(e.qty)}</td>
+      <td class="sub num">${fmt$(e.rev)}</td>
+      <td class="sub num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+    </tr>`;
+    return row + (isOpen ? styleColorExpandRow(scopedRows, style) : '');
+  }).join('') || `<tr><td class="sub" colspan="5">No lines for ${titleCase(chan)} in this period.</td></tr>`;
+  return `<tr class="cat-expand"><td colspan="4">
+    <div class="sub-title">Top 5 ${titleCase(chan)} Products by COGS</div>
+    <table>
+      <thead><tr><th>Style</th><th class="num">COGS</th><th class="num">Qty</th><th class="num">Revenue</th><th class="num">Margin</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+  </td></tr>`;
+}
+
+function channelMixRows(curRows, priorRows, hasPrior, scope) {
   const byChan = new Map();
   curRows.forEach(r => {
     if (!byChan.has(r.channel)) byChan.set(r.channel, { rev: 0, cost: 0, profit: 0 });
@@ -550,12 +784,14 @@ function channelMixRows(curRows, priorRows, hasPrior) {
       else if (margin < target.bad) statusHtml = `<span class="status-pill bad">▼ ${fmtPct(margin)}</span>`;
     }
     const share = totalRev > 0 ? e.rev / totalRev : 0;
-    return `<tr>
-      <td>${titleCase(chan)}</td>
+    const isOpen = expandedChannel === (scope + '|' + chan);
+    const row = `<tr class="chan-row" data-scope="${scope}" data-chan="${chan.replace(/"/g, '&quot;')}">
+      <td><span class="chev">${isOpen ? '▾' : '▸'}</span>${titleCase(chan)}</td>
       <td class="num">${fmt$(e.rev)}</td>
       <td class="num">${statusHtml}</td>
       <td class="num">${fmtPct(share)}</td>
     </tr>`;
+    return row + (isOpen ? channelExpandRow(scope, chan, curRows) : '');
   }).join('') || '<tr><td colspan="4" class="empty">No data for this period.</td></tr>';
 }
 
@@ -577,7 +813,7 @@ function renderCategory(cat) {
     kpiCard('Invoices', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null),
   ].join('');
 
-  const channelRows = channelMixRows(curRows, priorRows, hasPrior);
+  const channelRows = channelMixRows(curRows, priorRows, hasPrior, cat);
 
   // top styles
   const styleAgg = new Map();
