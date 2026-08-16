@@ -15,12 +15,30 @@ Static site, no build step — reads directly from Supabase.
 ## Refreshing the data
 
 Data is refreshed manually (same rhythm as the Highbank PDF deck) — there is no
-scheduled job. From `C:\Users\burme\hb-temp\`:
+scheduled job, and there's no in-app upload (the imputation math needs a full
+CSV scan of every line on a job, not just the Highbank ones, so it has to run
+where the CSVs are — see the "in-app upload" discussion in project history).
+
+Run from `C:\Users\burme\hb-temp\`, where `build_from_csv.js` and `hb_imputed.js`
+(copies of the `highbank-reporting` skill's pipeline scripts) already live
+alongside `upload_to_supabase.js` and `refresh.js`:
+
+```powershell
+node refresh.js
+```
+
+One command, one-time setup: put `SUPABASE_SERVICE_ROLE_KEY=<key>` in a
+`.env.local` file in that same folder (never commit it — already gitignored).
+`refresh.js` runs the CSV scan, the imputation step, and the Supabase upload
+in sequence, stopping on the first failure. Year folders under Full Year Data
+(2024, 2025, 2026, …) are auto-detected, so a new year showing up doesn't need
+a code change.
+
+Equivalent manual steps, if you ever need to run just one stage:
 
 ```powershell
 node --max-old-space-size=8192 build_from_csv.js
 node --max-old-space-size=4096 hb_imputed.js
-$env:SUPABASE_SERVICE_ROLE_KEY = "<service role key>"
 node upload_to_supabase.js
 ```
 
