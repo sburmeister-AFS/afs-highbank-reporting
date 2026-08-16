@@ -48,6 +48,14 @@ const cleanColor = (s) => {
   return isNonStock ? '*' + n : n;
 };
 
+// RFMS exports the same store inconsistently zero-padded across periods
+// ("1" in some months, "001" in others) — normalize to 3 digits so they
+// don't fragment into duplicate "stores" in any store-level breakdown.
+const normalizeStore = (s) => {
+  const n = parseInt(s, 10);
+  return Number.isFinite(n) ? String(n).padStart(3, '0') : (s || null);
+};
+
 const toDate = (yyyymmdd) => {
   if (yyyymmdd == null) return null;
   const s = String(yyyymmdd);
@@ -71,10 +79,11 @@ const toDate = (yyyymmdd) => {
       del_date: toDate(job ? job.deliveredDate : null),
       category: L.cat,
       channel: L.bd,
-      store: job ? job.store : null,
+      store: job ? normalizeStore(job.store) : null,
       style: L.qs ? '*' + stripTrailingNotation(L.style) : stripTrailingNotation(L.style),
       color: cleanColor(L.color),
       supplier: L.sup,
+      salesperson: L.salesperson,
       qty: L.qty,
       cost: L.cost,
       revenue: L.effRev,
