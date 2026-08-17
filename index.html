@@ -159,6 +159,7 @@
   td { padding: 8px 12px; border-bottom: 1px solid var(--gridline); font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
   td.num, th.num { text-align: right; }
+  table.table-centered th, table.table-centered td { text-align: center; }
   td.status-good { color: var(--good); font-weight: 600; }
   td.status-bad { color: var(--critical); font-weight: 600; }
 
@@ -314,6 +315,7 @@ const divisionLabel = (d) => d === 'Other' ? 'Other' : titleCase(d);
 
 let RAW_ROWS = []; // as fetched from Supabase — both loaded and unloaded fields present
 let RAW_JOBS = []; // whole-invoice totals (hb_jobs) for HB-touched invoices
+let RAW_PC_TOTALS = []; // market-wide (every supplier) Carpet/HS/Tile totals by year/month/category/channel
 let kpiFlipped = false; // click any of the 4 flippable KPI cards to flip all of them together, HB-line <-> whole-job view
 let ALL_ROWS = [];  // RAW_ROWS remapped to the active cost basis (cost/revenue/profit)
 let costBasis = 'loaded'; // 'loaded' | 'unloaded'
@@ -447,6 +449,23 @@ async function loadData() {
   } catch (e) {
     console.error('hb_jobs load failed (whole-job KPI flip unavailable):', e);
     RAW_JOBS = [];
+  }
+
+  // pc_totals (market-wide Carpet/HS/Tile totals, every supplier) — powers
+  // "% of Total COGS" on the Channel Review page. Best-effort, same as jobs.
+  try {
+    let pcRows = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb.from('pc_totals').select('*').range(from, from + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      pcRows = pcRows.concat(data);
+      if (data.length < PAGE) break;
+    }
+    RAW_PC_TOTALS = pcRows;
+  } catch (e) {
+    console.error('pc_totals load failed (% of Total COGS unavailable):', e);
+    RAW_PC_TOTALS = [];
   }
 
   // "Data through <date>" is the last actual delivered-sales date in the
@@ -631,6 +650,21 @@ function jobsFor(range, cat) {
     const idx = ymIdx(r.del_year, r.del_month);
     return idx >= lo && idx <= hi && (!cat || r.dominant_category === cat);
   });
+}
+
+// Market-wide (every supplier, not just Highbank) Carpet/Hard Surface/Tile
+// COGS for a period + channel — pc_totals only tracks the loaded basis
+// (tracking OCFrt/OCLoad/OCOverhead company-wide wasn't worth the added
+// pipeline pass), so this is always loaded cost regardless of the page's
+// Loaded/Unloaded toggle — kept apples-to-apples on one basis rather than
+// mixing an unloaded HB number against a loaded market number.
+function marketCogsFor(range, chan, cat) {
+  if (!range) return 0;
+  const lo = ymIdx(range.fromY, range.fromM), hi = ymIdx(range.toY, range.toM);
+  return RAW_PC_TOTALS.filter(r => {
+    const idx = ymIdx(r.del_year, r.del_month);
+    return idx >= lo && idx <= hi && (!chan || channelMatch(r, chan)) && (!cat || r.category === cat);
+  }).reduce((s, r) => s + (+r.total_cost), 0);
 }
 
 function aggJobs(rows) {
@@ -1019,19 +1053,32 @@ function renderChannelReview(chan) {
   const curJ = aggJobs(curJobs), priorJ = aggJobs(priorJobs);
   const hasPriorJ = priorJobs.length > 0;
 
+  // Highbank's share of the WHOLE market in this channel — every supplier's
+  // Carpet (PC 1) + Hard Surface (PC 6/10) + Tile (PC 22) COGS, not just
+  // Highbank's own. (Highbank COGS in this channel) / (all-supplier COGS
+  // in this channel, same 3 categories). Always loaded-cost basis on both
+  // sides, independent of the page's Loaded/Unloaded toggle — pc_totals
+  // only tracks loaded, so the HB side is pinned to loaded too here to
+  // keep the ratio apples-to-apples.
+  const hbCogsLoaded = rawCurAll.reduce((s, r) => s + (+r.cost), 0);
+  const marketCogs = marketCogsFor(selectedPeriod.cur, chan);
+  const cogsShareOfMarket = marketCogs > 0 ? hbCogsLoaded / marketCogs : null;
+
   const kpis = [
     flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
     flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
     flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
     flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
+    kpiCard('HB Share of total COGS', fmtPct(cogsShareOfMarket), null),
     fifthKpi,
   ].join('');
 
   const catRows = CATS.map(cat => {
     const c = agg(curAll.filter(r => r.category === cat));
-    const p = agg(priorAll.filter(r => r.category === cat));
-    const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
     const share = cur.rev > 0 ? c.rev / cur.rev : 0;
+    const catRawCost = rawCurAll.filter(r => r.category === cat).reduce((s, r) => s + (+r.cost), 0);
+    const catMarketCogs = marketCogsFor(selectedPeriod.cur, chan, cat);
+    const catShareOfMarket = catMarketCogs > 0 ? catRawCost / catMarketCogs : null;
     return `<tr>
       <td><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${CAT_COLOR[cat]};margin-right:7px;"></span>${cat}</td>
       <td class="num">${fmt$(c.rev)}</td>
@@ -1039,7 +1086,7 @@ function renderChannelReview(chan) {
       <td class="num">${fmt$(c.profit)}</td>
       <td class="num">${fmtPct(c.margin)}</td>
       <td class="num">${fmtPct(share)}</td>
-      <td class="num">${d ? `<span class="${d.cls === 'good' ? 'status-good' : d.cls === 'bad' ? 'status-bad' : ''}">${d.text}</span>` : '–'}</td>
+      <td class="num">${fmtPct(catShareOfMarket)}</td>
     </tr>`;
   }).join('');
 
@@ -1070,8 +1117,8 @@ function renderChannelReview(chan) {
     <div class="kpi-row">${kpis}</div>
     ${imputedNote(curAll)}
     <h2 class="section">By Category</h2>
-    <table class="card">
-      <thead><tr><th>Category</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num">Share</th><th class="num">YoY Rev</th></tr></thead>
+    <table class="card table-centered">
+      <thead><tr><th>Category</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num">Product Share</th><th class="num">HB Share of total COGS</th></tr></thead>
       <tbody>${catRows}</tbody>
     </table>
     <h2 class="section">Products</h2>

@@ -145,8 +145,35 @@ const toDate = (yyyymmdd) => {
   }
   console.log('');
 
+  // pc_totals: market-wide (every supplier) Carpet/Hard Surface/Tile totals
+  // by year/month/category/channel — the denominator for "Highbank's share
+  // of the whole category," not just share of Highbank's own totals.
+  const pcTotals = JSON.parse(fs.readFileSync('C:\\Users\\burme\\hb-temp\\pc_totals.json', 'utf8'));
+  const pcTotalRows = pcTotals.map((t) => ({
+    del_year: t.year,
+    del_month: t.month,
+    category: t.category,
+    channel: t.channel,
+    total_cost: t.cost,
+    total_revenue: t.revenue,
+    total_qty: t.qty,
+  }));
+
+  console.log(`Prepared ${pcTotalRows.length.toLocaleString()} pc_totals rows.`);
+  console.log('Clearing existing pc_totals rows...');
+  const { error: delPcErr } = await supabase.from('pc_totals').delete().neq('id', 0);
+  if (delPcErr) { console.error('Delete failed:', delPcErr); process.exit(1); }
+
+  for (let i = 0; i < pcTotalRows.length; i += BATCH) {
+    const batch = pcTotalRows.slice(i, i + BATCH);
+    const { error } = await supabase.from('pc_totals').insert(batch);
+    if (error) { console.error(`Insert failed at row ${i}:`, error); process.exit(1); }
+    process.stdout.write(`\r  inserted ${Math.min(i + BATCH, pcTotalRows.length).toLocaleString()} / ${pcTotalRows.length.toLocaleString()}`);
+  }
+  console.log('');
+
   const { error: logErr } = await supabase.from('hb_refresh_log').insert({ line_count: rows.length });
   if (logErr) { console.error('Refresh log insert failed:', logErr); process.exit(1); }
 
-  console.log(`Done. Uploaded ${rows.length.toLocaleString()} lines and ${jobRows.length.toLocaleString()} jobs.`);
+  console.log(`Done. Uploaded ${rows.length.toLocaleString()} lines, ${jobRows.length.toLocaleString()} jobs, and ${pcTotalRows.length.toLocaleString()} market-total buckets.`);
 })();
