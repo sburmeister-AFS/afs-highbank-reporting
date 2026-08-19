@@ -1,6 +1,8 @@
-// Pushes the highbank-reporting pipeline's line-level output to the
-// Highbank Reporting Dashboard's hb_lines table (Supabase project
-// gjqcypgbpekddqzjekvh, shared with the not-yet-deployed adjustment-app).
+// Pushes the stocking-programs pipeline's line-level output — every tracked
+// program (Highbank, AFS Collection, Elevated & Curated, Branded, Wholesale,
+// W&P), not just Highbank — to the Stocking Report Dashboard's hb_lines/
+// hb_jobs tables (Supabase project gjqcypgbpekddqzjekvh, shared with the
+// not-yet-deployed adjustment-app).
 //
 // Run after the normal pipeline (build_from_csv.js -> hb_imputed.js) has
 // produced hb_imputed.json + consolidated_normal.json in this folder.
@@ -73,6 +75,7 @@ const toDate = (yyyymmdd) => {
   const rows = imputed.lines.map((L) => {
     const job = jobByInv.get(L.inv);
     return {
+      program: L.program,
       invoice: L.inv,
       del_year: L.ym ? L.ym.y : null,
       del_month: L.ym ? L.ym.m : null,
@@ -110,12 +113,23 @@ const toDate = (yyyymmdd) => {
   }
   console.log('');
 
-  // hb_jobs: whole-invoice totals for every HB-touched NORMAL invoice — the
-  // "total revenue of all sales on an invoice with Highbank on it" view,
-  // as opposed to hb_lines' Highbank-line-only figures.
+  // hb_jobs: whole-invoice totals for every program-touched NORMAL invoice —
+  // the "total revenue of all sales on an invoice with [program] on it" view,
+  // as opposed to hb_lines' program-line-only figures.
+  //
+  // One row per (invoice, program): consolidated_normal.json now has an entry
+  // per program touching an invoice, each with that program's own
+  // dominant_category (computed from just that program's lines) but IDENTICAL
+  // job_revenue/job_cost/etc (the whole-job totals don't depend on which
+  // program you're viewing). This lets the dashboard's per-program "flip to
+  // whole-job view" KPI just filter WHERE program = X exactly like hb_lines —
+  // the tradeoff is a shared invoice appears more than once in this table, so
+  // any cross-program rollup MUST dedupe on invoice before summing, or it
+  // double-counts every invoice touched by more than one program.
   const jobRows = jobs.map((j) => {
     const dd = j.deliveredDate ? String(j.deliveredDate) : null;
     return {
+      program: j.program,
       invoice: j.invoice,
       del_year: dd ? +dd.slice(0, 4) : null,
       del_month: dd ? +dd.slice(4, 6) : null,

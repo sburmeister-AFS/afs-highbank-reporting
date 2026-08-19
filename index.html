@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Highbank Program Dashboard</title>
+<title>Stocking Report Dashboard</title>
 <script src="supabase.js"></script>
 <style>
   :root {
@@ -232,7 +232,7 @@
 
 <div id="gate">
   <div class="card">
-    <h1>Highbank Program Dashboard</h1>
+    <h1>Stocking Report Dashboard</h1>
     <p>Enter the password to continue</p>
     <input id="gate-pw" type="password" placeholder="Password" autocomplete="current-password" />
     <button id="gate-btn">Sign in</button>
@@ -244,7 +244,7 @@
   <div class="wrap">
     <header class="top">
       <div>
-        <h1>Highbank Program Dashboard</h1>
+        <h1>Stocking Report Dashboard</h1>
         <div class="meta" id="refreshed-meta">Loading…</div>
       </div>
       <div class="controls">
@@ -261,7 +261,17 @@
       </div>
     </header>
 
-    <nav class="tabs" id="tabs">
+    <div class="cat-pills" id="program-tabs" style="margin:4px 0 16px;">
+      <button class="cat-pill active" data-program="ALL">All Programs</button>
+      <button class="cat-pill" data-program="Highbank">Highbank</button>
+      <button class="cat-pill" data-program="AFS Collection">AFS Collection</button>
+      <button class="cat-pill" data-program="Elevated &amp; Curated">Elevated &amp; Curated</button>
+      <button class="cat-pill" data-program="Branded">Branded</button>
+      <button class="cat-pill" data-program="Wholesale">Wholesale (Program)</button>
+      <button class="cat-pill" data-program="W&amp;P">W&amp;P</button>
+    </div>
+
+    <nav class="tabs" id="tabs" style="display:none;">
       <button data-tab="overall" class="active">Overall</button>
       <button data-tab="Carpet"><span class="dot" style="background:var(--cat-carpet)"></span>Carpet</button>
       <button data-tab="Hard Surface"><span class="dot" style="background:var(--cat-hard)"></span>Hard Surface</button>
@@ -271,7 +281,7 @@
 
     <div id="content"></div>
 
-    <footer class="foot">Highbank-line basis (delivered sales, NORMAL service type). Bundled-invoice lines are imputed to whole-job margin — see the note under each period's KPIs for the exact share. A leading <strong>*</strong> flags a sourcing note: on a color name, that color is non-stock (special order); on a Tile style name, that item is quick-ship.</footer>
+    <footer class="foot">Program-line basis (delivered sales, NORMAL service type). Bundled-invoice lines are imputed to whole-job margin — see the note under each period's KPIs for the exact share. A leading <strong>*</strong> flags a sourcing note: on a color name, that color is non-stock (special order); on a Tile style name, that item is quick-ship.</footer>
   </div>
 </div>
 
@@ -313,6 +323,23 @@ const channelMatch = (r, chan) => chan === 'Other' ? OTHER_CHANNELS.includes(r.c
 const DIVISIONS = ['RETAIL', 'WHOLESALE', 'BUILDER', 'PROPERTY MGMT', 'E-COMMERCE', 'Other'];
 const divisionLabel = (d) => d === 'Other' ? 'Other' : titleCase(d);
 
+// Stocking programs this dashboard tracks, plus 'ALL' for the cross-program
+// rollup. "Wholesale" here is a *product* program (a merchandising
+// classification) — distinct from the "WHOLESALE" value in DIVISIONS above,
+// which is a sales channel. The same item can be Wholesale-program and sell
+// through the Retail channel, or vice versa — label it unambiguously so the
+// two never get confused.
+const PROGRAMS = ['Highbank', 'AFS Collection', 'Elevated & Curated', 'Branded', 'Wholesale', 'W&P'];
+const PROGRAM_LABEL = { 'Wholesale': 'Wholesale (Program)' };
+const programLabel = (p) => PROGRAM_LABEL[p] || p;
+// Elevated & Curated / Branded / Wholesale / W&P have no per-line sales tag —
+// they're matched to a sale by looking up today's stocking_items list, so a
+// sale made before an item's current tag was set may be classified
+// differently than it would have been at the time. Highbank and AFS
+// Collection are tagged directly on the sale itself and don't have this
+// limitation. Surfaced as a footnote wherever one of these programs is active.
+const RETROACTIVE_TAG_PROGRAMS = new Set(['Elevated & Curated', 'Branded', 'Wholesale', 'W&P']);
+
 let RAW_ROWS = []; // as fetched from Supabase — both loaded and unloaded fields present
 let RAW_JOBS = []; // whole-invoice totals (hb_jobs) for HB-touched invoices
 let RAW_PC_TOTALS = []; // market-wide (every supplier) Carpet/HS/Tile totals by year/month/category/channel
@@ -321,6 +348,7 @@ let ALL_ROWS = [];  // RAW_ROWS remapped to the active cost basis (cost/revenue/
 let costBasis = 'loaded'; // 'loaded' | 'unloaded'
 let PERIODS = [];       // [{key, label, year, months:[1..n]}]
 let selectedPeriod = null;
+let activeProgram = 'ALL'; // 'ALL' | one of PROGRAMS
 let activeTab = 'overall';
 let expandedCategory = null;
 let expandedStyle = null; // key: `${cat}|${style}`
@@ -476,8 +504,8 @@ async function loadData() {
   const maxDateLabel = maxDate ? new Date(maxDate + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null;
   const refreshedLabel = refreshed ? new Date(refreshed.refreshed_at).toLocaleString() : null;
   document.getElementById('refreshed-meta').textContent = maxDateLabel
-    ? `Data through ${maxDateLabel}${refreshedLabel ? ` · refreshed ${refreshedLabel}` : ''} · ${rows.length.toLocaleString()} HB lines`
-    : (refreshedLabel ? `Last refreshed ${refreshedLabel} · ${refreshed.line_count.toLocaleString()} HB lines` : 'No data yet');
+    ? `Data through ${maxDateLabel}${refreshedLabel ? ` · refreshed ${refreshedLabel}` : ''} · ${rows.length.toLocaleString()} lines`
+    : (refreshedLabel ? `Last refreshed ${refreshedLabel} · ${refreshed.line_count.toLocaleString()} lines` : 'No data yet');
 
   buildPeriods();
   renderPeriodSelect();
@@ -486,9 +514,12 @@ async function loadData() {
 
 // Remaps RAW_ROWS -> ALL_ROWS so every render function (agg, topStylesByCost,
 // channelMixRows, trailingCogsAverages, ...) can keep reading plain
-// r.cost/r.revenue/r.profit without knowing which basis is active.
+// r.cost/r.revenue/r.profit without knowing which basis is active. Also
+// scopes to the active program — when activeProgram is 'ALL' every tracked
+// program's rows pass through unfiltered (the cross-program rollup view).
 function applyCostBasis() {
-  ALL_ROWS = costBasis === 'loaded' ? RAW_ROWS : RAW_ROWS.map(r => ({
+  const scoped = activeProgram === 'ALL' ? RAW_ROWS : RAW_ROWS.filter(r => r.program === activeProgram);
+  ALL_ROWS = costBasis === 'loaded' ? scoped : scoped.map(r => ({
     ...r,
     cost: r.unloaded_cost,
     revenue: r.unloaded_revenue,
@@ -543,34 +574,40 @@ const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct'
 const monthLabel = (y, m) => `${MONTH_NAMES[m - 1]} ${y}`;
 const monthInputVal = (y, m) => `${y}-${String(m).padStart(2, '0')}`;
 
+// Repopulates the <select> only — listeners are bound once, below, outside
+// this function. Program switches call this repeatedly (PERIODS can differ
+// per program), and re-binding a listener on every call would stack
+// duplicates and fire the handler N times per change.
 function renderPeriodSelect() {
   if (!selectedPeriod) return; // no data loaded — nothing to populate the selector with
   const sel = document.getElementById('period-select');
   sel.innerHTML = PERIODS.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
   sel.value = selectedPeriod.key;
-
-  sel.addEventListener('change', () => {
-    const customEl = document.getElementById('custom-range');
-    if (sel.value === 'custom') {
-      customEl.style.display = 'flex';
-      const fromInput = document.getElementById('range-from');
-      const toInput = document.getElementById('range-to');
-      if (!fromInput.value) fromInput.value = monthInputVal(DATA_MIN.y, DATA_MIN.m);
-      if (!toInput.value) toInput.value = monthInputVal(DATA_MAX.y, DATA_MAX.m);
-      applyCustomRange();
-    } else {
-      customEl.style.display = 'none';
-      selectedPeriod = PERIODS.find(p => p.key === sel.value);
-      render();
-    }
-  });
-
-  ['range-from', 'range-to'].forEach(id => {
-    document.getElementById(id).addEventListener('change', () => {
-      if (sel.value === 'custom') applyCustomRange();
-    });
-  });
+  document.getElementById('custom-range').style.display = selectedPeriod.key === 'custom' ? 'flex' : 'none';
 }
+
+document.getElementById('period-select').addEventListener('change', () => {
+  const sel = document.getElementById('period-select');
+  const customEl = document.getElementById('custom-range');
+  if (sel.value === 'custom') {
+    customEl.style.display = 'flex';
+    const fromInput = document.getElementById('range-from');
+    const toInput = document.getElementById('range-to');
+    if (!fromInput.value) fromInput.value = monthInputVal(DATA_MIN.y, DATA_MIN.m);
+    if (!toInput.value) toInput.value = monthInputVal(DATA_MAX.y, DATA_MAX.m);
+    applyCustomRange();
+  } else {
+    customEl.style.display = 'none';
+    selectedPeriod = PERIODS.find(p => p.key === sel.value);
+    render();
+  }
+});
+
+['range-from', 'range-to'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (document.getElementById('period-select').value === 'custom') applyCustomRange();
+  });
+});
 
 function applyCustomRange() {
   const fromVal = document.getElementById('range-from').value;
@@ -609,7 +646,8 @@ function rawRowsFor(range, cat) {
   if (!range) return [];
   const lo = ymIdx(range.fromY, range.fromM);
   const hi = ymIdx(range.toY, range.toM);
-  return RAW_ROWS.filter(r => {
+  const scoped = activeProgram === 'ALL' ? RAW_ROWS : RAW_ROWS.filter(r => r.program === activeProgram);
+  return scoped.filter(r => {
     const idx = ymIdx(r.del_year, r.del_month);
     return idx >= lo && idx <= hi && (!cat || r.category === cat);
   });
@@ -646,7 +684,20 @@ function agg(rows) {
 function jobsFor(range, cat) {
   if (!range) return [];
   const lo = ymIdx(range.fromY, range.fromM), hi = ymIdx(range.toY, range.toM);
-  return RAW_JOBS.filter(r => {
+  // hb_jobs has one row per (invoice, program) — an invoice touched by more
+  // than one program appears more than once with IDENTICAL job totals. This
+  // view is only meant for a single active program (the whole-job KPI flip),
+  // so filter to it directly. If ever called with activeProgram === 'ALL',
+  // dedupe on invoice first — summing raw rows across programs here would
+  // double-count every invoice touched by more than one program.
+  let scoped;
+  if (activeProgram === 'ALL') {
+    const seen = new Set();
+    scoped = RAW_JOBS.filter(r => (seen.has(r.invoice) ? false : (seen.add(r.invoice), true)));
+  } else {
+    scoped = RAW_JOBS.filter(r => r.program === activeProgram);
+  }
+  return scoped.filter(r => {
     const idx = ymIdx(r.del_year, r.del_month);
     return idx >= lo && idx <= hi && (!cat || r.dominant_category === cat);
   });
@@ -696,6 +747,45 @@ function flippableKpiCard(metricKey, hbLabel, hb, jobLabel, job) {
   </div>`;
 }
 
+// ---------------- program picker ----------------
+// The outer layer above the existing per-program tabs. Picking a specific
+// program scopes every existing view (Overall/Carpet/Hard Surface/Tile/
+// Leaderboard, unchanged) to it; picking "All Programs" replaces them with
+// the cross-program rollup (renderAllPrograms) — categories don't compare
+// meaningfully across programs of very different size, so that view skips
+// the category tabs entirely.
+function switchProgram(program) {
+  activeProgram = program;
+  document.querySelectorAll('#program-tabs button').forEach(b => b.classList.toggle('active', b.dataset.program === program));
+  const isAll = program === 'ALL';
+  document.getElementById('tabs').style.display = isAll ? 'none' : '';
+  // Every drill-down/expansion state is invalid once the underlying data
+  // scope changes — reset back to a clean Overall view, same as a fresh load.
+  activeTab = 'overall';
+  document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'overall'));
+  expandedCategory = null;
+  expandedStyle = null;
+  expandedChannel = null;
+  expandedChannelStyle = null;
+  channelReviewOf = null;
+  channelReviewCat = null;
+  reviewExpandedStyle = null;
+  expandedWeek = null;
+  salespersonReviewOpen = false;
+  storeReviewOf = null;
+  storeReviewCat = null;
+  applyCostBasis();
+  buildPeriods();
+  renderPeriodSelect();
+  render();
+}
+
+document.getElementById('program-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-program]');
+  if (!btn) return;
+  switchProgram(btn.dataset.program);
+});
+
 // ---------------- tabs ----------------
 document.getElementById('tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-tab]');
@@ -716,6 +806,11 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 
 // ---------------- category / channel / style / color drill-down ----------------
 document.getElementById('content').addEventListener('click', (e) => {
+  const programRow = e.target.closest('tr.program-row');
+  if (programRow) {
+    switchProgram(programRow.dataset.program);
+    return;
+  }
   const backBtn = e.target.closest('#channel-review-back');
   if (backBtn) {
     channelReviewOf = null;
@@ -994,12 +1089,19 @@ function categoryExpandRow(cat, curRows) {
 function render() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
+  if (activeProgram === 'ALL') { content.innerHTML = renderAllPrograms(); wireTrendChart(); return; }
   if (channelReviewOf) { content.innerHTML = renderChannelReview(channelReviewOf); return; }
   if (storeReviewOf) { content.innerHTML = renderStoreReview(storeReviewOf); return; }
   if (salespersonReviewOpen) { content.innerHTML = renderSalespersonReview(); return; }
   if (activeTab === 'overall') { content.innerHTML = renderOverall(); wireTrendChart(); }
   else if (activeTab === 'leaderboard') content.innerHTML = renderLeaderboard();
   else content.innerHTML = renderCategory(activeTab);
+  // Elevated & Curated / Branded / Wholesale / W&P are matched to sales via
+  // today's stocking list, not a per-line historical tag — surface that
+  // limitation on every view of one of those programs, not just some of them.
+  if (RETROACTIVE_TAG_PROGRAMS.has(activeProgram)) {
+    content.innerHTML += `<div class="imputed-note"><strong>Note:</strong> ${programLabel(activeProgram)} sales are matched to today's stocking list, not the tag an item carried at time of sale — a sale made before this item's current program tag was set may be classified differently than it would have been then.</div>`;
+  }
 }
 
 function renderSalespersonReview() {
@@ -1223,7 +1325,7 @@ function imputedNote(rows) {
   const lineShare = imputedRows.length / rows.length;
   const revShare = totalRev > 0 ? imputedRev / totalRev : 0;
   return `<div class="imputed-note">
-    <strong>${fmtPct(lineShare)}</strong> of HB lines (<strong>${fmtPct(revShare)}</strong> of revenue) in this period are on bundled invoices —
+    <strong>${fmtPct(lineShare)}</strong> of lines (<strong>${fmtPct(revShare)}</strong> of revenue) in this period are on bundled invoices —
     their revenue/margin is imputed from whole-job margin rather than actual billing. The rest is actual billed revenue.
   </div>`;
 }
@@ -1508,6 +1610,58 @@ function kpiCard(label, valueText, delta) {
     <div class="value">${valueText}</div>
     ${delta ? `<div class="delta ${delta.cls}">${delta.text}</div>` : ''}
   </div>`;
+}
+
+// ---------------- All Programs (cross-program rollup) ----------------
+// Deliberately simpler than the per-program Overall tab: no category tabs
+// (categories don't compare meaningfully across a ~200-item Highbank program
+// vs. an 8-item AFS Collection), and no whole-job KPI flip (that reads from
+// hb_jobs, which has one row per (invoice, program) — summing it across every
+// program here would double-count any invoice touched by more than one
+// program; jobsFor()/aggJobs() are intentionally not used in this function).
+function renderAllPrograms() {
+  const curRows = rowsFor(selectedPeriod.cur);
+  const priorRows = rowsFor(selectedPeriod.prior);
+  const cur = agg(curRows), prior = agg(priorRows);
+  const hasPrior = priorRows.length > 0;
+
+  const kpis = [
+    kpiCard('Total Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
+    kpiCard(`Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
+    kpiCard('Total Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
+    kpiCard('Total Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
+    kpiCard('# of Orders', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null),
+  ].join('');
+
+  const programRows = PROGRAMS.map(program => {
+    const c = agg(curRows.filter(r => r.program === program));
+    const p = agg(priorRows.filter(r => r.program === program));
+    const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
+    return `<tr class="program-row" data-program="${program}">
+      <td><span class="chev">▸</span>${programLabel(program)}</td>
+      <td class="num">${fmt$(c.rev)}</td>
+      <td class="num">${fmt$(c.cost)}</td>
+      <td class="num">${fmt$(c.profit)}</td>
+      <td class="num">${fmtPct(c.margin)}</td>
+      <td class="num">${fmtNum(c.invCount)}</td>
+      <td class="num">${d ? `<span class="${d.cls === 'good' ? 'status-good' : d.cls === 'bad' ? 'status-bad' : ''}">${d.text}</span>` : '–'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="kpi-row">${kpis}</div>
+    ${imputedNote(curRows)}
+    <h2 class="section">By Program <span class="view-all-hint">Click a row to drill in →</span></h2>
+    <table class="card">
+      <thead><tr><th>Program</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num"># of Orders</th><th class="num">YoY Rev</th></tr></thead>
+      <tbody>${programRows}</tbody>
+    </table>
+    <h2 class="section">Revenue by Program</h2>
+    ${renderStackedBarChart(topEntriesByCategory(curRows, r => programLabel(r.program), Infinity, 'revenue'), { chartW: 640, labelW: 160 })}
+    <h2 class="section">Trend</h2>
+    ${renderTrendChart()}
+    <div class="imputed-note"><strong>Note:</strong> Elevated &amp; Curated, Branded, Wholesale, and W&amp;P sales are matched to today's stocking list, not the tag an item carried at time of sale — a sale made before an item's current program tag was set may be classified differently than it would have been then. Highbank and AFS Collection are tagged directly on each sale and don't have this limitation.</div>
+  `;
 }
 
 function renderOverall() {
