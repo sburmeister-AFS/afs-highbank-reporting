@@ -261,7 +261,7 @@
       </div>
     </header>
 
-    <div class="cat-pills" id="program-tabs" style="margin:4px 0 16px;">
+    <div class="cat-pills" id="program-tabs" style="margin:4px 0 10px;">
       <button class="cat-pill active" data-program="ALL">All Programs</button>
       <button class="cat-pill" data-program="Highbank">Highbank</button>
       <button class="cat-pill" data-program="AFS Collection">AFS Collection</button>
@@ -269,6 +269,16 @@
       <button class="cat-pill" data-program="Branded">Branded</button>
       <button class="cat-pill" data-program="Wholesale">Wholesale (Program)</button>
       <button class="cat-pill" data-program="W&amp;P">W&amp;P</button>
+    </div>
+
+    <div class="cat-pills" id="division-tabs" style="margin:0 0 16px;">
+      <button class="cat-pill active" data-division="ALL">All Divisions</button>
+      <button class="cat-pill" data-division="RETAIL">Retail</button>
+      <button class="cat-pill" data-division="WHOLESALE">Wholesale</button>
+      <button class="cat-pill" data-division="BUILDER">Builder</button>
+      <button class="cat-pill" data-division="PROPERTY MGMT">Property Mgmt</button>
+      <button class="cat-pill" data-division="E-COMMERCE">E-Commerce</button>
+      <button class="cat-pill" data-division="Other">Other</button>
     </div>
 
     <nav class="tabs" id="tabs" style="display:none;">
@@ -349,6 +359,7 @@ let costBasis = 'loaded'; // 'loaded' | 'unloaded'
 let PERIODS = [];       // [{key, label, year, months:[1..n]}]
 let selectedPeriod = null;
 let activeProgram = 'ALL'; // 'ALL' | one of PROGRAMS
+let activeDivision = 'ALL'; // 'ALL' | one of DIVISIONS (channel, not the "Wholesale" program)
 let activeTab = 'overall';
 let expandedCategory = null;
 let expandedStyle = null; // key: `${cat}|${style}`
@@ -517,8 +528,17 @@ async function loadData() {
 // r.cost/r.revenue/r.profit without knowing which basis is active. Also
 // scopes to the active program — when activeProgram is 'ALL' every tracked
 // program's rows pass through unfiltered (the cross-program rollup view).
+// Shared by hb_lines-shaped rows (program + channel) and hb_jobs-shaped rows
+// (program + channel, same field names) — both outer filters funnel through
+// this single check so applyCostBasis/rawRowsFor/jobsFor can't drift apart.
+function matchesActiveFilters(r) {
+  if (activeProgram !== 'ALL' && r.program !== activeProgram) return false;
+  if (activeDivision !== 'ALL' && channelKey(r.channel) !== activeDivision) return false;
+  return true;
+}
+
 function applyCostBasis() {
-  const scoped = activeProgram === 'ALL' ? RAW_ROWS : RAW_ROWS.filter(r => r.program === activeProgram);
+  const scoped = RAW_ROWS.filter(matchesActiveFilters);
   ALL_ROWS = costBasis === 'loaded' ? scoped : scoped.map(r => ({
     ...r,
     cost: r.unloaded_cost,
@@ -646,7 +666,7 @@ function rawRowsFor(range, cat) {
   if (!range) return [];
   const lo = ymIdx(range.fromY, range.fromM);
   const hi = ymIdx(range.toY, range.toM);
-  const scoped = activeProgram === 'ALL' ? RAW_ROWS : RAW_ROWS.filter(r => r.program === activeProgram);
+  const scoped = RAW_ROWS.filter(matchesActiveFilters);
   return scoped.filter(r => {
     const idx = ymIdx(r.del_year, r.del_month);
     return idx >= lo && idx <= hi && (!cat || r.category === cat);
@@ -690,12 +710,21 @@ function jobsFor(range, cat) {
   // so filter to it directly. If ever called with activeProgram === 'ALL',
   // dedupe on invoice first — summing raw rows across programs here would
   // double-count every invoice touched by more than one program.
+  // matchesActiveFilters covers both the program and division checks in
+  // either branch below — when activeProgram is 'ALL' it only enforces the
+  // division filter (if any), leaving the dedupe as the only thing standing
+  // between this and double-counting a shared invoice.
   let scoped;
   if (activeProgram === 'ALL') {
     const seen = new Set();
-    scoped = RAW_JOBS.filter(r => (seen.has(r.invoice) ? false : (seen.add(r.invoice), true)));
+    scoped = RAW_JOBS.filter(r => {
+      if (!matchesActiveFilters(r)) return false;
+      if (seen.has(r.invoice)) return false;
+      seen.add(r.invoice);
+      return true;
+    });
   } else {
-    scoped = RAW_JOBS.filter(r => r.program === activeProgram);
+    scoped = RAW_JOBS.filter(matchesActiveFilters);
   }
   return scoped.filter(r => {
     const idx = ymIdx(r.del_year, r.del_month);
@@ -747,20 +776,21 @@ function flippableKpiCard(metricKey, hbLabel, hb, jobLabel, job) {
   </div>`;
 }
 
-// ---------------- program picker ----------------
-// The outer layer above the existing per-program tabs. Picking a specific
-// program scopes every existing view (Overall/Carpet/Hard Surface/Tile/
-// Leaderboard, unchanged) to it; picking "All Programs" replaces them with
-// the cross-program rollup (renderAllPrograms) — categories don't compare
+// ---------------- program / division pickers ----------------
+// Two independent outer filters, same reach: picking a specific program
+// scopes every existing view (Overall/Carpet/Hard Surface/Tile/Leaderboard,
+// unchanged) to it; picking "All Programs" replaces them with the
+// cross-program rollup (renderAllPrograms) — categories don't compare
 // meaningfully across programs of very different size, so that view skips
-// the category tabs entirely.
-function switchProgram(program) {
-  activeProgram = program;
-  document.querySelectorAll('#program-tabs button').forEach(b => b.classList.toggle('active', b.dataset.program === program));
-  const isAll = program === 'ALL';
-  document.getElementById('tabs').style.display = isAll ? 'none' : '';
-  // Every drill-down/expansion state is invalid once the underlying data
-  // scope changes — reset back to a clean Overall view, same as a fresh load.
+// the category tabs entirely. The division filter (Retail/Wholesale/
+// Builder/Property Mgmt/E-Commerce/Other — the sales channel, not the
+// "Wholesale" *program*) narrows either view the same way, independent of
+// which program is active.
+//
+// Both filters funnel through the same reset: every drill-down/expansion
+// state is invalid once the underlying data scope changes, so both go back
+// to a clean Overall view, same as a fresh load.
+function resetDrillDownAndRerender() {
   activeTab = 'overall';
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === 'overall'));
   expandedCategory = null;
@@ -780,10 +810,29 @@ function switchProgram(program) {
   render();
 }
 
+function switchProgram(program) {
+  activeProgram = program;
+  document.querySelectorAll('#program-tabs button').forEach(b => b.classList.toggle('active', b.dataset.program === program));
+  document.getElementById('tabs').style.display = program === 'ALL' ? 'none' : '';
+  resetDrillDownAndRerender();
+}
+
+function switchDivision(division) {
+  activeDivision = division;
+  document.querySelectorAll('#division-tabs button').forEach(b => b.classList.toggle('active', b.dataset.division === division));
+  resetDrillDownAndRerender();
+}
+
 document.getElementById('program-tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-program]');
   if (!btn) return;
   switchProgram(btn.dataset.program);
+});
+
+document.getElementById('division-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-division]');
+  if (!btn) return;
+  switchDivision(btn.dataset.division);
 });
 
 // ---------------- tabs ----------------
@@ -1631,7 +1680,7 @@ function renderAllPrograms() {
   // only tracks loaded), independent of the page's Loaded/Unloaded toggle,
   // so the ratio stays apples-to-apples regardless of which basis is active.
   const programsCogsLoaded = rawRowsFor(selectedPeriod.cur).reduce((s, r) => s + (+r.cost), 0);
-  const marketCogs = marketCogsFor(selectedPeriod.cur);
+  const marketCogs = marketCogsFor(selectedPeriod.cur, activeDivision === 'ALL' ? null : activeDivision);
   const costShareOfMarket = marketCogs > 0 ? programsCogsLoaded / marketCogs : null;
 
   const kpis = [
