@@ -372,8 +372,8 @@ let ALL_ROWS = [];  // RAW_ROWS remapped to the active cost basis (cost/revenue/
 let costBasis = 'loaded'; // 'loaded' | 'unloaded'
 let PERIODS = [];       // [{key, label, year, months:[1..n]}]
 let selectedPeriod = null;
-let activeProgram = 'ALL'; // 'ALL' | one of PROGRAMS
-let activeDivision = 'ALL'; // 'ALL' | one of DIVISIONS (channel, not the "Wholesale" program)
+let activeProgram = new Set(); // empty = "All Programs"; otherwise 1+ selected values from PROGRAMS
+let activeDivision = new Set(); // empty = "All Divisions"; otherwise 1+ selected values from DIVISIONS (channel, not the "Wholesale" program)
 let showYoyPct = true; // By Program table (All Programs view): inline YoY Rev delta on/off
 let activeTab = 'overall';
 let expandedCategory = null;
@@ -541,14 +541,15 @@ async function loadData() {
 // Remaps RAW_ROWS -> ALL_ROWS so every render function (agg, topStylesByCost,
 // channelMixRows, trailingCogsAverages, ...) can keep reading plain
 // r.cost/r.revenue/r.profit without knowing which basis is active. Also
-// scopes to the active program — when activeProgram is 'ALL' every tracked
-// program's rows pass through unfiltered (the cross-program rollup view).
+// scopes to the active program(s) — an empty activeProgram Set means every
+// tracked program's rows pass through unfiltered (the cross-program rollup
+// view); 1+ selected programs pass the union of their rows through.
 // Shared by hb_lines-shaped rows (program + channel) and hb_jobs-shaped rows
 // (program + channel, same field names) — both outer filters funnel through
 // this single check so applyCostBasis/rawRowsFor/jobsFor can't drift apart.
 function matchesActiveFilters(r) {
-  if (activeProgram !== 'ALL' && r.program !== activeProgram) return false;
-  if (activeDivision !== 'ALL' && channelKey(r.channel) !== activeDivision) return false;
+  if (activeProgram.size > 0 && !activeProgram.has(r.program)) return false;
+  if (activeDivision.size > 0 && !activeDivision.has(channelKey(r.channel))) return false;
   return true;
 }
 
@@ -720,17 +721,15 @@ function jobsFor(range, cat) {
   if (!range) return [];
   const lo = ymIdx(range.fromY, range.fromM), hi = ymIdx(range.toY, range.toM);
   // hb_jobs has one row per (invoice, program) — an invoice touched by more
-  // than one program appears more than once with IDENTICAL job totals. This
-  // view is only meant for a single active program (the whole-job KPI flip),
-  // so filter to it directly. If ever called with activeProgram === 'ALL',
-  // dedupe on invoice first — summing raw rows across programs here would
-  // double-count every invoice touched by more than one program.
-  // matchesActiveFilters covers both the program and division checks in
-  // either branch below — when activeProgram is 'ALL' it only enforces the
-  // division filter (if any), leaving the dedupe as the only thing standing
-  // between this and double-counting a shared invoice.
+  // than one selected program appears more than once with IDENTICAL job
+  // totals. That's only a non-issue when exactly one program is selected;
+  // with 0 selected (All Programs) or 2+ selected, dedupe on invoice first —
+  // summing raw rows here would double-count any invoice touched by more
+  // than one of the programs currently in scope.
   let scoped;
-  if (activeProgram === 'ALL') {
+  if (activeProgram.size === 1) {
+    scoped = RAW_JOBS.filter(matchesActiveFilters);
+  } else {
     const seen = new Set();
     scoped = RAW_JOBS.filter(r => {
       if (!matchesActiveFilters(r)) return false;
@@ -738,8 +737,6 @@ function jobsFor(range, cat) {
       seen.add(r.invoice);
       return true;
     });
-  } else {
-    scoped = RAW_JOBS.filter(matchesActiveFilters);
   }
   return scoped.filter(r => {
     const idx = ymIdx(r.del_year, r.del_month);
@@ -825,29 +822,63 @@ function resetDrillDownAndRerender() {
   render();
 }
 
-function switchProgram(program) {
-  activeProgram = program;
-  document.querySelectorAll('#program-tabs button').forEach(b => b.classList.toggle('active', b.dataset.program === program));
-  document.getElementById('tabs').style.display = program === 'ALL' ? 'none' : '';
+// Both pill rows are multi-select checkboxes, not radio buttons: clicking a
+// specific pill adds/removes it from the selection, and 2+ selected programs
+// just widen the scope of the normal per-category tabs (their union), rather
+// than switching to a different kind of view. The "All Programs"/"All
+// Divisions" pill is the odd one out — it always clears the whole selection
+// (an empty selection IS "All", so it also lights up automatically whenever
+// you deselect your way back down to nothing).
+function syncProgramTabsUI() {
+  document.querySelectorAll('#program-tabs button').forEach(b => {
+    const p = b.dataset.program;
+    b.classList.toggle('active', p === 'ALL' ? activeProgram.size === 0 : activeProgram.has(p));
+  });
+  document.getElementById('tabs').style.display = activeProgram.size === 0 ? 'none' : '';
+}
+
+function syncDivisionTabsUI() {
+  document.querySelectorAll('#division-tabs button').forEach(b => {
+    const d = b.dataset.division;
+    b.classList.toggle('active', d === 'ALL' ? activeDivision.size === 0 : activeDivision.has(d));
+  });
+}
+
+function toggleProgram(program) {
+  if (program === 'ALL') activeProgram.clear();
+  else if (activeProgram.has(program)) activeProgram.delete(program);
+  else activeProgram.add(program);
+  syncProgramTabsUI();
   resetDrillDownAndRerender();
 }
 
-function switchDivision(division) {
-  activeDivision = division;
-  document.querySelectorAll('#division-tabs button').forEach(b => b.classList.toggle('active', b.dataset.division === division));
+// Used by the "By Program" table's row click (renderAllPrograms) — a "go
+// look at just this one" shortcut, so it replaces the selection rather than
+// adding to whatever else might already be picked.
+function selectOnlyProgram(program) {
+  activeProgram = new Set([program]);
+  syncProgramTabsUI();
+  resetDrillDownAndRerender();
+}
+
+function toggleDivision(division) {
+  if (division === 'ALL') activeDivision.clear();
+  else if (activeDivision.has(division)) activeDivision.delete(division);
+  else activeDivision.add(division);
+  syncDivisionTabsUI();
   resetDrillDownAndRerender();
 }
 
 document.getElementById('program-tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-program]');
   if (!btn) return;
-  switchProgram(btn.dataset.program);
+  toggleProgram(btn.dataset.program);
 });
 
 document.getElementById('division-tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-division]');
   if (!btn) return;
-  switchDivision(btn.dataset.division);
+  toggleDivision(btn.dataset.division);
 });
 
 // ---------------- tabs ----------------
@@ -872,7 +903,7 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 document.getElementById('content').addEventListener('click', (e) => {
   const programRow = e.target.closest('tr.program-row');
   if (programRow) {
-    switchProgram(programRow.dataset.program);
+    selectOnlyProgram(programRow.dataset.program);
     return;
   }
   const backBtn = e.target.closest('#channel-review-back');
@@ -1172,7 +1203,7 @@ function render() {
 function renderContent() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
-  if (activeProgram === 'ALL') { content.innerHTML = renderAllPrograms(); wireTrendChart(); return; }
+  if (activeProgram.size === 0) { content.innerHTML = renderAllPrograms(); wireTrendChart(); return; }
   if (channelReviewOf) { content.innerHTML = renderChannelReview(channelReviewOf); return; }
   if (storeReviewOf) { content.innerHTML = renderStoreReview(storeReviewOf); return; }
   if (salespersonReviewOpen) { content.innerHTML = renderSalespersonReview(); return; }
@@ -1181,9 +1212,12 @@ function renderContent() {
   else content.innerHTML = renderCategory(activeTab);
   // Elevated & Curated / Branded / Wholesale / W&P are matched to sales via
   // today's stocking list, not a per-line historical tag — surface that
-  // limitation on every view of one of those programs, not just some of them.
-  if (RETROACTIVE_TAG_PROGRAMS.has(activeProgram)) {
-    content.innerHTML += `<div class="imputed-note"><strong>Note:</strong> ${programLabel(activeProgram)} sales are matched to today's stocking list, not the tag an item carried at time of sale — a sale made before this item's current program tag was set may be classified differently than it would have been then.</div>`;
+  // limitation whenever any selected program is one of those 4, not just
+  // when it's the only one selected.
+  const retroactiveSelected = [...activeProgram].filter(p => RETROACTIVE_TAG_PROGRAMS.has(p));
+  if (retroactiveSelected.length > 0) {
+    const names = retroactiveSelected.map(programLabel).join(', ');
+    content.innerHTML += `<div class="imputed-note"><strong>Note:</strong> ${names} sales are matched to today's stocking list, not the tag an item carried at time of sale — a sale made before this item's current program tag was set may be classified differently than it would have been then.</div>`;
   }
 }
 
@@ -1714,7 +1748,12 @@ function renderAllPrograms() {
   // only tracks loaded), independent of the page's Loaded/Unloaded toggle,
   // so the ratio stays apples-to-apples regardless of which basis is active.
   const programsCogsLoaded = rawRowsFor(selectedPeriod.cur).reduce((s, r) => s + (+r.cost), 0);
-  const marketCogs = marketCogsFor(selectedPeriod.cur, activeDivision === 'ALL' ? null : activeDivision);
+  // marketCogsFor takes one channel at a time — sum across every selected
+  // division when more than one is picked (0 selected = whole market, no
+  // division filter).
+  const marketCogs = activeDivision.size === 0
+    ? marketCogsFor(selectedPeriod.cur)
+    : [...activeDivision].reduce((s, div) => s + marketCogsFor(selectedPeriod.cur, div), 0);
   const costShareOfMarket = marketCogs > 0 ? programsCogsLoaded / marketCogs : null;
 
   const kpis = [
