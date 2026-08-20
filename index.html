@@ -1625,12 +1625,21 @@ function renderAllPrograms() {
   const cur = agg(curRows), prior = agg(priorRows);
   const hasPrior = priorRows.length > 0;
 
+  // Share of the whole company's COGS (every supplier, not just tracked
+  // programs) — same metric/convention as the Channel Review page's "HB
+  // Share of total COGS": always loaded-cost basis on both sides (pc_totals
+  // only tracks loaded), independent of the page's Loaded/Unloaded toggle,
+  // so the ratio stays apples-to-apples regardless of which basis is active.
+  const programsCogsLoaded = rawRowsFor(selectedPeriod.cur).reduce((s, r) => s + (+r.cost), 0);
+  const marketCogs = marketCogsFor(selectedPeriod.cur);
+  const costShareOfMarket = marketCogs > 0 ? programsCogsLoaded / marketCogs : null;
+
   const kpis = [
     kpiCard('Total Revenue', fmt$(cur.rev), hasPrior ? fmtDelta(cur.rev, prior.rev) : null),
     kpiCard(`Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, fmt$(cur.cost), hasPrior ? fmtDelta(cur.cost, prior.cost) : null),
     kpiCard('Total Profit', fmt$(cur.profit), hasPrior ? fmtDelta(cur.profit, prior.profit) : null),
     kpiCard('Total Margin', fmtPct(cur.margin), hasPrior ? fmtPP(cur.margin, prior.margin) : null),
-    kpiCard('# of Orders', fmtNum(cur.invCount), hasPrior ? fmtDelta(cur.invCount, prior.invCount) : null),
+    kpiCard('Share of Total COGS', fmtPct(costShareOfMarket), null),
   ].join('');
 
   const programRows = PROGRAMS.map(program => {
