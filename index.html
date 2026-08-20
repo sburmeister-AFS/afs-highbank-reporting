@@ -1637,13 +1637,14 @@ function renderAllPrograms() {
     const c = agg(curRows.filter(r => r.program === program));
     const p = agg(priorRows.filter(r => r.program === program));
     const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
+    const costShare = cur.cost > 0 ? c.cost / cur.cost : 0;
     return `<tr class="program-row" data-program="${program}">
       <td><span class="chev">▸</span>${programLabel(program)}</td>
       <td class="num">${fmt$(c.rev)}</td>
       <td class="num">${fmt$(c.cost)}</td>
       <td class="num">${fmt$(c.profit)}</td>
       <td class="num">${fmtPct(c.margin)}</td>
-      <td class="num">${fmtNum(c.invCount)}</td>
+      <td class="num">${fmtPct(costShare)}</td>
       <td class="num">${d ? `<span class="${d.cls === 'good' ? 'status-good' : d.cls === 'bad' ? 'status-bad' : ''}">${d.text}</span>` : '–'}</td>
     </tr>`;
   }).join('');
@@ -1653,7 +1654,7 @@ function renderAllPrograms() {
     ${imputedNote(curRows)}
     <h2 class="section">By Program <span class="view-all-hint">Click a row to drill in →</span></h2>
     <table class="card">
-      <thead><tr><th>Program</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num"># of Orders</th><th class="num">YoY Rev</th></tr></thead>
+      <thead><tr><th>Program</th><th class="num">Revenue</th><th class="num">COGS</th><th class="num">Profit</th><th class="num">Margin</th><th class="num">% of COGS</th><th class="num">YoY Rev</th></tr></thead>
       <tbody>${programRows}</tbody>
     </table>
     <h2 class="section">Revenue by Program</h2>
