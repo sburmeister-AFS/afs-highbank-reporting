@@ -119,10 +119,18 @@
   .cost-basis-btn + .cost-basis-btn { border-left: 1px solid var(--gridline); }
   .cost-basis-btn.active { background: var(--accent); color: #fff; }
 
+  #program-tabs {
+    position: sticky; top: var(--program-tabs-top, 56px); z-index: 11; background: var(--page);
+    padding-top: 4px;
+  }
+  #division-tabs {
+    position: sticky; top: var(--division-tabs-top, 90px); z-index: 10; background: var(--page);
+  }
+
   nav.tabs {
     display: flex; gap: 4px; border-bottom: 1px solid var(--gridline); margin-bottom: 20px;
     flex-wrap: wrap;
-    position: sticky; top: var(--tabs-top, 56px); z-index: 11; background: var(--page);
+    position: sticky; top: var(--tabs-top, 56px); z-index: 9; background: var(--page);
   }
   nav.tabs button {
     font-size: 13px; font-weight: 600; padding: 9px 14px; border: none; background: none;
@@ -136,7 +144,7 @@
 
   .kpi-row {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px;
-    position: sticky; top: var(--kpi-top, 100px); z-index: 10; background: var(--page);
+    position: sticky; top: var(--kpi-top, 100px); z-index: 8; background: var(--page);
     padding-top: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--gridline);
   }
   .kpi {
@@ -1151,7 +1159,17 @@ function categoryExpandRow(cat, curRows) {
 }
 
 // ---------------- render ----------------
+// Thin wrapper around renderContent() so updateStickyOffsets() always runs
+// after every state change, regardless of which of renderContent()'s early
+// returns fired — nav.tabs' display toggles between the All Programs view
+// and a specific program, which changes how much room the sticky KPI row
+// needs, and nothing else would trigger that recalculation.
 function render() {
+  renderContent();
+  updateStickyOffsets();
+}
+
+function renderContent() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
   if (activeProgram === 'ALL') { content.innerHTML = renderAllPrograms(); wireTrendChart(); return; }
@@ -2212,19 +2230,29 @@ function renderLeaderboard() {
   `;
 }
 
-// Keeps the sticky tabs bar and KPI row correctly stacked under the header —
-// header height varies (controls wrap onto a second line on narrow windows),
-// so the offsets are measured rather than hardcoded.
+// Keeps every sticky bar (program picker, division picker, tabs, KPI row)
+// correctly stacked under the header — heights vary (controls/pills wrap
+// onto a second line on narrow windows, nav.tabs collapses to 0 height on
+// the All Programs view since it's hidden there), so offsets are measured
+// rather than hardcoded.
 function updateStickyOffsets() {
   const header = document.querySelector('header.top');
+  const programTabs = document.getElementById('program-tabs');
+  const divisionTabs = document.getElementById('division-tabs');
   const tabs = document.querySelector('nav.tabs');
   if (!header || !tabs) return;
   const headerH = header.offsetHeight;
-  document.documentElement.style.setProperty('--tabs-top', headerH + 'px');
-  document.documentElement.style.setProperty('--kpi-top', (headerH + tabs.offsetHeight) + 'px');
+  const programTabsH = programTabs ? programTabs.offsetHeight : 0;
+  const divisionTabsH = divisionTabs ? divisionTabs.offsetHeight : 0;
+  document.documentElement.style.setProperty('--program-tabs-top', headerH + 'px');
+  document.documentElement.style.setProperty('--division-tabs-top', (headerH + programTabsH) + 'px');
+  document.documentElement.style.setProperty('--tabs-top', (headerH + programTabsH + divisionTabsH) + 'px');
+  document.documentElement.style.setProperty('--kpi-top', (headerH + programTabsH + divisionTabsH + tabs.offsetHeight) + 'px');
 }
 window.addEventListener('resize', updateStickyOffsets);
 new ResizeObserver(updateStickyOffsets).observe(document.querySelector('header.top'));
+new ResizeObserver(updateStickyOffsets).observe(document.getElementById('program-tabs'));
+new ResizeObserver(updateStickyOffsets).observe(document.getElementById('division-tabs'));
 
 checkExistingSession();
 </script>
