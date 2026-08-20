@@ -9,6 +9,11 @@
 //      flags, or sidemark=BRANDED + comment) -> Elevated & Curated / Branded /
 //      Wholesale / W&P. See lib/stockingProgramLookup.js for the exact rules
 //      and the historical-accuracy caveat this implies for these 4 programs.
+//   4. Style+Color match against program_overrides, only if (3) found nothing,
+//      and only for sales on/after that override's own effective_start_date —
+//      a manually-confirmed backstop for items whose tag disappeared/changed
+//      or was never set. Never guessed automatically; entries are added by
+//      hand. See lib/stockingProgramLookup.js.
 //   else -> not a tracked program, line is skipped from program-level output
 //      (still counted in whole-job/market-wide totals below, same as always).
 //
@@ -81,14 +86,21 @@ const jobTypeToBigDiv = (jt) => {
 
 // Resolves which tracked stocking program (if any) a sales line belongs to.
 // Precedence: Priv_Collection-tagged programs (historically accurate, no
-// lookup needed) beat the stocking-list JOIN (today's-snapshot based, the
-// only option for programs with no per-line sales tag).
-const programForRow = (row, programLookup) => {
+// lookup needed) beat the live stocking_items tag (today's-snapshot based),
+// which beats program_overrides (a manually-confirmed backstop for items
+// whose tag disappeared/changed or was never set — only applies on/after
+// that item's own effective_start_date, never checked at all if either of
+// the first two already found something).
+const programForRow = (row, tagLookup, overrideLookup, dd) => {
   const privCollection = String(row['Priv_Collection'] || '').toUpperCase().trim();
   if (privCollection.includes('HIGHBANK')) return 'Highbank';
   if (privCollection === 'AFS COLLECTION') return 'AFS Collection';
   const key = normalizeKey(row['StyleItem'], row['ColorDesc']);
-  return programLookup.get(key) || null;
+  const tagged = tagLookup.get(key);
+  if (tagged) return tagged;
+  const override = overrideLookup.get(key);
+  if (override && dd != null && dd >= override.startYyyymmdd) return override.program;
+  return null;
 };
 
 // All invoices (limited to NORMAL lines) — we only retain program-touched ones at the end
@@ -128,7 +140,7 @@ for (const y of years) {
   files.forEach(f => csvFiles.push({ year: y, file: path.join(dir, f), name: f }));
 }
 
-const processFile = (cfg, programLookup) => new Promise((resolve, reject) => {
+const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, reject) => {
   let total = 0, normal = 0, tracked = 0;
   const parser = parse({ columns: true, relax_quotes: true, relax_column_count: true, skip_empty_lines: true });
   fs.createReadStream(cfg.file)
@@ -188,7 +200,7 @@ const processFile = (cfg, programLookup) => new Promise((resolve, reject) => {
       }
 
       // Program-specific accumulation
-      const program = programForRow(row, programLookup);
+      const program = programForRow(row, tagLookup, overrideLookup, dd);
       if (!program) {
         const priv = String(row['Priv_Collection'] || '').toUpperCase().trim();
         if (priv === 'STOCK' || priv === '') noProgramStockCount++;
@@ -247,11 +259,11 @@ const processFile = (cfg, programLookup) => new Promise((resolve, reject) => {
 
 (async () => {
   console.log('Fetching current stocking_items list to build the program lookup...');
-  const programLookup = await buildProgramLookup(); // throws (and aborts the run) if this comes back empty
-  console.log(`Program lookup built: ${programLookup.size.toLocaleString()} style+color keys mapped.`);
+  const { tagLookup, overrideLookup } = await buildProgramLookup(); // throws (and aborts the run) if stocking_items comes back empty
+  console.log(`Program lookup built: ${tagLookup.size.toLocaleString()} style+color keys mapped, ${overrideLookup.size.toLocaleString()} manual override(s).`);
 
   console.log(`Streaming ${csvFiles.length} CSV files (NORMAL only)...`);
-  for (const cfg of csvFiles) await processFile(cfg, programLookup);
+  for (const cfg of csvFiles) await processFile(cfg, tagLookup, overrideLookup);
   console.log(`\nDuplicate rows skipped   : ${dupSkipped.toLocaleString()}`);
   console.log(`All invoices seen        : ${jobAgg.size.toLocaleString()}`);
   console.log('\nProgram-tracked NORMAL lines by program:');
