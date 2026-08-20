@@ -31,6 +31,14 @@ build step — reads directly from Supabase.
   permanent limitation, surfaced as a footnote on those 4 programs' views in
   the dashboard. See `lib/stockingProgramLookup.js` for the exact tagging
   rules and precedence.
+- **Manual override fallback (`program_overrides` table, same Supabase
+  project):** a backstop for items whose live `stocking_items` tag
+  disappeared/changed, or was never set at all. Checked only when the live
+  tag lookup finds nothing, and only applies to sales on/after that entry's
+  own `effective_start_date` — it never reaches back before that date for
+  that item. Entries are added by hand (Scott confirms a specific
+  Style+Color+program+start-date), never inferred automatically. Columns:
+  `program`, `style`, `color`, `effective_start_date`, `note`.
 
 ## Refreshing the data
 
