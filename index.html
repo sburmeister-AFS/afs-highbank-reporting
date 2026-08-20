@@ -1707,19 +1707,31 @@ function renderAllPrograms() {
     kpiCard('Share of Total COGS', fmtPct(costShareOfMarket), null),
   ].join('');
 
+  // Inline YoY next to a value, gated on the toggle — same helper for every
+  // column in this table so they all render/hide together.
+  const inlineDelta = (delta) => (showYoyPct && delta)
+    ? `<span class="inline-delta ${delta.cls === 'good' ? 'good' : delta.cls === 'bad' ? 'bad' : ''}">${delta.text}</span>`
+    : '';
+
   const programRows = PROGRAMS.map(program => {
     const c = agg(curRows.filter(r => r.program === program));
     const p = agg(priorRows.filter(r => r.program === program));
-    const d = hasPrior ? fmtDelta(c.rev, p.rev) : null;
     const costShare = cur.cost > 0 ? c.cost / cur.cost : 0;
-    const yoyHtml = (showYoyPct && d) ? `<span class="inline-delta ${d.cls === 'good' ? 'good' : d.cls === 'bad' ? 'bad' : ''}">${d.text}</span>` : '';
+    const priorCostShare = prior.cost > 0 ? p.cost / prior.cost : null;
+
+    const revD = hasPrior ? fmtDelta(c.rev, p.rev) : null;
+    const cogsD = hasPrior ? fmtDelta(c.cost, p.cost) : null;
+    const profitD = hasPrior ? fmtDelta(c.profit, p.profit) : null;
+    const marginD = hasPrior ? fmtPP(c.margin, p.margin) : null;
+    const costShareD = hasPrior ? fmtPP(costShare, priorCostShare) : null;
+
     return `<tr class="program-row" data-program="${program}">
       <td><span class="chev">▸</span>${programLabel(program)}</td>
-      <td class="num">${fmt$(c.rev)}${yoyHtml}</td>
-      <td class="num">${fmt$(c.cost)}</td>
-      <td class="num">${fmt$(c.profit)}</td>
-      <td class="num">${fmtPct(c.margin)}</td>
-      <td class="num">${fmtPct(costShare)}</td>
+      <td class="num">${fmt$(c.rev)}${inlineDelta(revD)}</td>
+      <td class="num">${fmt$(c.cost)}${inlineDelta(cogsD)}</td>
+      <td class="num">${fmt$(c.profit)}${inlineDelta(profitD)}</td>
+      <td class="num">${fmtPct(c.margin)}${inlineDelta(marginD)}</td>
+      <td class="num">${fmtPct(costShare)}${inlineDelta(costShareD)}</td>
     </tr>`;
   }).join('');
 
