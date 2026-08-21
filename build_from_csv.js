@@ -127,6 +127,15 @@ let dupSkipped = 0;
 const programLineCounts = new Map();
 let noProgramStockCount = 0; // NORMAL lines with Priv_Collection = STOCK (or similar) that matched no tracked program
 
+// Style+color pairs that matched no tracked program, with their combined
+// revenue — printed at the end (top N by revenue) so a real, actively-sold
+// product silently falling out of every program (e.g. because its ColorDesc
+// carries a dye-lot suffix stocking_items doesn't have) shows up immediately
+// instead of requiring someone to notice a missing product days/months
+// later. Keyed on the normalized display style+color, PC 1/6/10/22 lines
+// only (matches the category-reporting scope elsewhere in this file).
+const unmatchedAgg = new Map(); // "style|color" -> { style, color, revenue, cost, qty, lines, privSamples: Set }
+
 // Auto-detect year folders (rather than a hardcoded list) so a new year
 // showing up under Full Year Data — e.g. 2027 — is picked up without a
 // code change.
@@ -204,6 +213,15 @@ const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, re
       if (!program) {
         const priv = String(row['Priv_Collection'] || '').toUpperCase().trim();
         if (priv === 'STOCK' || priv === '') noProgramStockCount++;
+        if (catFor(+row['PC'])) {
+          const uStyle = normalize(row['Stripped Style'] || row['StyleItem'] || '(unknown)');
+          const uColor = normalize(row['ColorDesc'] || '(none)');
+          const uKey = `${uStyle}|${uColor}`;
+          let u = unmatchedAgg.get(uKey);
+          if (!u) { u = { style: uStyle, color: uColor, revenue: 0, cost: 0, qty: 0, lines: 0, privSamples: new Set() }; unmatchedAgg.set(uKey, u); }
+          u.revenue += lt; u.cost += cost; u.qty += qty; u.lines++;
+          if (priv) u.privSamples.add(priv);
+        }
         return;
       }
       tracked++;
@@ -272,6 +290,18 @@ const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, re
   }
   console.log(`  ${'(no tracked program, STOCK)'.padEnd(20)} ${noProgramStockCount.toLocaleString()}`);
   console.log(`Program-touched (invoice, program) pairs: ${invMeta.size.toLocaleString()}`);
+
+  // Top unmatched style+colors by revenue — a real, currently-selling product
+  // sitting near the top here (especially one you know is stocked/tracked)
+  // means its style+color text isn't matching stocking_items via
+  // normalizeKey, so it's silently missing from every program's numbers.
+  const topUnmatched = [...unmatchedAgg.values()].sort((a, b) => b.revenue - a.revenue).slice(0, 25);
+  if (topUnmatched.length) {
+    console.log('\nTop 25 unmatched style+colors by revenue (no tracked program, PC 1/6/10/22 only):');
+    for (const u of topUnmatched) {
+      console.log(`  $${Math.round(u.revenue).toLocaleString().padStart(10)}  ${u.lines.toString().padStart(4)} lines  [${[...u.privSamples].join(',') || '(none)'}]  ${u.style} — ${u.color}`);
+    }
+  }
 
   // Compute dominant Big Division and dominant Category per (program, invoice)
   for (const [, m] of invMeta) {
