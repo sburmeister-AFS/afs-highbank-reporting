@@ -104,7 +104,7 @@
   header.top h1 { font-size: 22px; margin: 0; letter-spacing: -0.2px; }
   header.top .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
   .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  select, .btn, input[type="month"] {
+  select, .btn, input[type="month"], input[type="text"] {
     font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--gridline);
     background: var(--surface-1); color: var(--text-primary); font-family: inherit;
   }
@@ -187,12 +187,12 @@
   .review-title { font-size: 18px; font-weight: 700; margin: 0; }
 
   .cat-pills { display: flex; gap: 6px; margin: 4px 0 12px; }
-  .cat-pill, .trend-metric-btn, .rank-metric-btn, .rank-cat-btn, .week-avg-btn, .week-cat-btn, .rank-div-btn, .rank-store-btn, .store-cat-pill, .hotcold-window-btn {
+  .cat-pill, .trend-metric-btn, .rank-metric-btn, .rank-cat-btn, .week-avg-btn, .week-cat-btn, .rank-div-btn, .rank-store-btn, .store-cat-pill, .hotcold-window-btn, .product-store-btn {
     font-size: 13px; font-weight: 600; padding: 7px 16px; border-radius: 999px;
     border: 1px solid var(--gridline); background: var(--surface-1); color: var(--text-secondary);
     cursor: pointer;
   }
-  .cat-pill.active, .trend-metric-btn.active, .rank-metric-btn.active, .rank-cat-btn.active, .week-avg-btn.active, .week-cat-btn.active, .rank-div-btn.active, .rank-store-btn.active, .store-cat-pill.active, .hotcold-window-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cat-pill.active, .trend-metric-btn.active, .rank-metric-btn.active, .rank-cat-btn.active, .week-avg-btn.active, .week-cat-btn.active, .rank-div-btn.active, .rank-store-btn.active, .store-cat-pill.active, .hotcold-window-btn.active, .product-store-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .stat-pair { display: flex; gap: 20px; margin-top: 4px; flex-wrap: wrap; }
   .stat-pair .stat { flex: 1; min-width: 140px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
@@ -207,6 +207,12 @@
   tr.cat-expand th { padding: 5px 10px; }
   tr.cat-expand td.sub { padding: 5px 10px; border-bottom: 1px solid var(--gridline); }
   tr.cat-expand .sub-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; }
+
+  .product-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .product-controls input[type="text"] { min-width: 260px; }
+  .product-count { font-size: 12px; color: var(--text-muted); }
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: var(--text-secondary); }
 
   .empty { color: var(--text-muted); font-size: 13px; padding: 20px 0; }
   footer.foot { margin-top: 40px; font-size: 11px; color: var(--text-muted); }
@@ -301,6 +307,7 @@
       <button data-tab="Hard Surface"><span class="dot" style="background:var(--cat-hard)"></span>Hard Surface</button>
       <button data-tab="Tile"><span class="dot" style="background:var(--cat-tile)"></span>Tile</button>
       <button data-tab="leaderboard">Leaderboard</button>
+      <button data-tab="products">Products</button>
     </nav>
 
     <div id="content"></div>
@@ -395,6 +402,9 @@ let hotColdWindow = 90; // 30 | 60 | 90 | 180 | 365 — trailing days for Hot 5 
 let trendMetric = 'cost'; // 'cost' | 'qty' | 'revenue' | 'profit' | 'margin' — Overall tab's trend chart
 let rankMetric = 'revenue'; // same set — Overall tab's Salesperson/Store bar charts
 let rankCategoryFilter = 'All'; // 'All' | 'Carpet' | 'Hard Surface' | 'Tile' — scopes those same charts
+let productSearch = ''; // Products tab — free-text filter over style/color/category
+let productSort = { key: 'cost', dir: 'desc' }; // Products tab — active sort column/direction
+let productStoreFilter = 'All'; // Products tab — 'All' | a store code
 
 // ---------------- formatting ----------------
 const fmt$ = (n) => {
@@ -997,6 +1007,20 @@ document.getElementById('content').addEventListener('click', (e) => {
     render();
     return;
   }
+  const productStoreBtn = e.target.closest('button.product-store-btn');
+  if (productStoreBtn) {
+    productStoreFilter = productStoreBtn.dataset.store;
+    render();
+    return;
+  }
+  const sortTh = e.target.closest('th.sortable');
+  if (sortTh) {
+    const key = sortTh.dataset.key;
+    if (productSort.key === key) productSort.dir = productSort.dir === 'asc' ? 'desc' : 'asc';
+    else productSort = { key, dir: (key === 'product' || key === 'category') ? 'asc' : 'desc' };
+    render();
+    return;
+  }
   const flipCard = e.target.closest('.kpi-flippable');
   if (flipCard) {
     kpiFlipped = !kpiFlipped;
@@ -1080,6 +1104,16 @@ document.getElementById('content').addEventListener('click', (e) => {
   }
 });
 
+// Full render() on every keystroke would replace #content's innerHTML and
+// drop focus out of the search box, so this updates just the table body
+// (buildProductRows()/updateProductTable() below) instead of calling render().
+document.getElementById('content').addEventListener('input', (e) => {
+  const searchBox = e.target.closest('#product-search');
+  if (!searchBox) return;
+  productSearch = searchBox.value;
+  updateProductTable();
+});
+
 // Independent of the page's period selector — always trailing N days back
 // from the latest actual delivered-sales date in the data.
 function rowsInTrailingDays(days) {
@@ -1121,6 +1155,8 @@ function renderHotColdTable(entries, label) {
     </table>
   `;
 }
+
+const catAbbr = (cats) => [...cats].map(c => c === 'Carpet' ? 'Carp' : c === 'Hard Surface' ? 'HS' : 'Tile').join('/');
 
 function topStylesByCost(rows, n) {
   const m = new Map();
@@ -1209,6 +1245,7 @@ function renderContent() {
   if (salespersonReviewOpen) { content.innerHTML = renderSalespersonReview(); return; }
   if (activeTab === 'overall') { content.innerHTML = renderOverall(); wireTrendChart(); }
   else if (activeTab === 'leaderboard') content.innerHTML = renderLeaderboard();
+  else if (activeTab === 'products') content.innerHTML = renderProducts();
   else content.innerHTML = renderCategory(activeTab);
   // Elevated & Curated / Branded / Wholesale / W&P are matched to sales via
   // today's stocking list, not a per-line historical tag — surface that
@@ -2229,8 +2266,6 @@ function renderLeaderboard() {
     e.rev += +r.revenue; e.profit += +r.profit;
   });
 
-  const catAbbr = (cats) => [...cats].map(c => c === 'Carpet' ? 'Carp' : c === 'Hard Surface' ? 'HS' : 'Tile').join('/');
-
   const byRev = [...styleAgg.entries()].sort((a, b) => b[1].rev - a[1].rev).slice(0, 10);
   const revRows = byRev.map(([style, e]) => {
     const p = priorStyleAgg.get(style);
@@ -2266,6 +2301,122 @@ function renderLeaderboard() {
       <thead><tr><th>Style</th><th>Cat</th><th class="num">Margin</th><th class="num">HB Rev</th><th class="num">HB COGS</th><th class="num">Invs</th></tr></thead>
       <tbody>${marginRows || '<tr><td colspan="6" class="empty">No data.</td></tr>'}</tbody>
     </table>
+  `;
+}
+
+// ---------------- Products tab (every style+color sold, sortable/filterable) ----------------
+// One row per style+color combo (same granularity as the style-color drill-
+// down used elsewhere — see styleColorEntries) rather than per-style, so two
+// colors of the same style don't get blended into one line. Scoped by the
+// page's period/program/division filters exactly like every other tab
+// (rowsFor already applies all three); category is shown as a column here
+// instead of a tab, since the point of this view is to see everything at
+// once and then sort/search down to specifics.
+function productEntries(rows) {
+  const m = new Map();
+  rows.forEach(r => {
+    const key = `${r.style} ${r.color || '(none)'}`;
+    if (!m.has(key)) m.set(key, { style: r.style, color: r.color || '(none)', cats: new Set(), qty: 0, cost: 0, rev: 0, profit: 0 });
+    const e = m.get(key);
+    e.cats.add(r.category); e.qty += +r.qty; e.cost += +r.cost; e.rev += +r.revenue; e.profit += +r.profit;
+  });
+  return [...m.values()];
+}
+
+function filterProducts(entries, search) {
+  const q = (search || '').trim().toLowerCase();
+  if (!q) return entries;
+  return entries.filter(e =>
+    e.style.toLowerCase().includes(q) ||
+    e.color.toLowerCase().includes(q) ||
+    [...e.cats].some(c => c.toLowerCase().includes(q))
+  );
+}
+
+// Nulls (margin with $0 revenue) always sort to the bottom regardless of
+// the active sort direction — an undefined margin isn't "low," it's unknown.
+function sortProducts(entries, sort) {
+  const dir = sort.dir === 'asc' ? 1 : -1;
+  const val = (e) => {
+    switch (sort.key) {
+      case 'product': return `${e.style} — ${e.color}`.toLowerCase();
+      case 'category': return catAbbr(e.cats);
+      case 'qty': return e.qty;
+      case 'rev': return e.rev;
+      case 'margin': return e.rev > 0 ? e.profit / e.rev : null;
+      default: return e.cost;
+    }
+  };
+  return [...entries].sort((a, b) => {
+    const av = val(a), bv = val(b);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+}
+
+function sortArrow(key) {
+  if (productSort.key !== key) return '';
+  return productSort.dir === 'asc' ? ' ▲' : ' ▼';
+}
+
+function buildProductRows() {
+  let curRows = rowsFor(selectedPeriod.cur);
+  if (productStoreFilter !== 'All') curRows = curRows.filter(r => r.store === productStoreFilter);
+  let entries = productEntries(curRows);
+  entries = filterProducts(entries, productSearch);
+  entries = sortProducts(entries, productSort);
+  const rowsHtml = entries.map(e => {
+    const margin = e.rev > 0 ? e.profit / e.rev : null;
+    return `<tr>
+      <td>${e.style} — ${e.color}</td>
+      <td>${catAbbr(e.cats)}</td>
+      <td class="num">${fmt$(e.cost)}</td>
+      <td class="num">${fmtNum(e.qty)}</td>
+      <td class="num">${fmt$(e.rev)}</td>
+      <td class="num">${fmtPct(margin)}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" class="empty">No products match.</td></tr>`;
+  return { rowsHtml, count: entries.length };
+}
+
+// Called on every search-box keystroke — swaps only the tbody (and count)
+// rather than going through render(), which would replace #content's
+// innerHTML and drop focus out of the input.
+function updateProductTable() {
+  const tbody = document.getElementById('product-tbody');
+  if (!tbody) return;
+  const { rowsHtml, count } = buildProductRows();
+  tbody.innerHTML = rowsHtml;
+  const countEl = document.getElementById('product-count');
+  if (countEl) countEl.textContent = `${count.toLocaleString()} product${count === 1 ? '' : 's'}`;
+}
+
+function renderProducts() {
+  const { rowsHtml, count } = buildProductRows();
+  return `
+    <div class="cat-pills">${['All', ...STORE_CODES].map(code =>
+      `<button class="product-store-btn ${productStoreFilter === code ? 'active' : ''}" data-store="${code}">${code === 'All' ? 'All Stores' : storeLabel(code)}</button>`
+    ).join('')}</div>
+    <div class="product-controls">
+      <input id="product-search" type="text" placeholder="Search style or color…" value="${(productSearch || '').replace(/"/g, '&quot;')}" />
+      <span id="product-count" class="product-count">${count.toLocaleString()} product${count === 1 ? '' : 's'}</span>
+    </div>
+    <div class="table-scroll">
+      <table class="card">
+        <thead><tr>
+          <th class="sortable" data-key="product">Product${sortArrow('product')}</th>
+          <th class="sortable" data-key="category">Category${sortArrow('category')}</th>
+          <th class="num sortable" data-key="cost">COGS${sortArrow('cost')}</th>
+          <th class="num sortable" data-key="qty">Qty${sortArrow('qty')}</th>
+          <th class="num sortable" data-key="rev">Revenue${sortArrow('rev')}</th>
+          <th class="num sortable" data-key="margin">Margin${sortArrow('margin')}</th>
+        </tr></thead>
+        <tbody id="product-tbody">${rowsHtml}</tbody>
+      </table>
+    </div>
   `;
 }
 
