@@ -26,6 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { Readable } = require('stream');
 const { parse } = require('csv-parse');
 const { buildProgramLookup } = require('./lib/stockingProgramLookup');
 const { normalizeKey } = require('./lib/normalizeKey');
@@ -149,10 +150,31 @@ for (const y of years) {
   files.forEach(f => csvFiles.push({ year: y, file: path.join(dir, f), name: f }));
 }
 
+// RFMS exports these CSVs in Windows-1252, not UTF-8 — raw byte 0x97 (the
+// cp1252 em-dash, used in tags like "— ST") is invalid on its own in UTF-8
+// and decodes to U+FFFD "�", breaking normalizeKey's em-dash-tag stripping.
+// Confirmed via a raw byte dump of 2026/apr26all.csv (offset 13321831) —
+// remap just that one byte to real em-dash UTF-8 bytes before parsing,
+// rather than pull in a full cp1252 decoding library for what's otherwise a
+// UTF-8-clean export.
+const EM_DASH_UTF8 = Buffer.from([0xe2, 0x80, 0x94]);
+function fixCp1252EmDash(buf) {
+  const chunks = [];
+  let start = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x97) {
+      chunks.push(buf.subarray(start, i), EM_DASH_UTF8);
+      start = i + 1;
+    }
+  }
+  chunks.push(buf.subarray(start));
+  return Buffer.concat(chunks);
+}
+
 const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, reject) => {
   let total = 0, normal = 0, tracked = 0;
   const parser = parse({ columns: true, relax_quotes: true, relax_column_count: true, skip_empty_lines: true });
-  fs.createReadStream(cfg.file)
+  Readable.from([fixCp1252EmDash(fs.readFileSync(cfg.file))])
     .pipe(parser)
     .on('data', (row) => {
       total++;
