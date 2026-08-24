@@ -24,7 +24,7 @@ for (const j of jobs) {
   if (!jobByInv.has(j.invoice)) jobByInv.set(j.invoice, j);
 }
 
-const cats = ['Carpet', 'Hard Surface', 'Tile'];
+const cats = ['Carpet', 'Hard Surface', 'Tile', 'Carpet Tile', 'Rolled Goods'];
 const fmt$ = (n) => '$' + Math.round(n).toLocaleString();
 
 let total = 0, imputed = 0, invsWithBundling = 0, invsSeen = new Set();

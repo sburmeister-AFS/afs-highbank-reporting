@@ -40,13 +40,28 @@ const OUT_DIR = 'C:\\Users\\burme\\hb-temp';
 // (confirmed 2026-08-16) — they still count toward the whole-job
 // revenue/cost used for bundled-invoice imputation (that accumulation
 // happens before this categorization, for every line regardless of PC).
+// PC 2/4/7/11 added 2026-08-21 (Scott confirmed): 7 (Laminate) and 11
+// (unfinished Hardwood) roll into Hard Surface; 4 (Carpet Tile) and 2
+// (Sheet Vinyl / "Rolled Goods") are their own tracked categories — PC 7
+// alone was $25M in NORMAL revenue across 2024-2026 that had never been
+// counted in any category total before this fix.
 const catFor = (pc) => {
   const p = +pc;
   if (p === 1) return 'Carpet';
-  if (p === 6 || p === 10) return 'Hard Surface';
+  if (p === 6 || p === 10 || p === 7 || p === 11) return 'Hard Surface';
   if (p === 22) return 'Tile';
+  if (p === 4) return 'Carpet Tile';
+  if (p === 2) return 'Rolled Goods';
   return null;
 };
+// Every category catFor() can return — must stay in sync with it. Used to
+// initialize the per-invoice catCost/catQty/catProfit/supCost/styleByCat
+// accumulators below so a line in a newer category (e.g. Carpet Tile) has
+// somewhere to go instead of writing into an undefined key.
+const TRACKED_CATS = ['Carpet', 'Hard Surface', 'Tile', 'Carpet Tile', 'Rolled Goods'];
+const zeroByCat = () => Object.fromEntries(TRACKED_CATS.map(c => [c, 0]));
+const emptyObjByCat = () => Object.fromEntries(TRACKED_CATS.map(c => [c, {}]));
+const emptyMapByCat = () => Object.fromEntries(TRACKED_CATS.map(c => [c, new Map()]));
 const ymOf = (n) => {
   if (n == null || n === '') return null;
   const s = String(n);
@@ -268,12 +283,12 @@ const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, re
       if (!m) {
         m = {
           program, invoice: inv,
-          catCost: { Carpet: 0, 'Hard Surface': 0, Tile: 0 },
-          catQty:  { Carpet: 0, 'Hard Surface': 0, Tile: 0 },
-          catProfit: { Carpet: 0, 'Hard Surface': 0, Tile: 0 },
+          catCost: zeroByCat(),
+          catQty: zeroByCat(),
+          catProfit: zeroByCat(),
           bigDivCost: {},
-          supCost: { Carpet: {}, 'Hard Surface': {}, Tile: {} },
-          styleByCat: { Carpet: new Map(), 'Hard Surface': new Map(), Tile: new Map() },
+          supCost: emptyObjByCat(),
+          styleByCat: emptyMapByCat(),
           deliveredDate: null,
           store: row['Store'],
         };
@@ -331,7 +346,7 @@ const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, re
     for (const [k, v] of Object.entries(m.bigDivCost)) if (v > max) { max = v; bd = k; }
     m.bigDiv = bd;
     let dc = 'Carpet'; max = -Infinity;
-    for (const c of ['Carpet', 'Hard Surface', 'Tile']) if (m.catCost[c] > max) { max = m.catCost[c]; dc = c; }
+    for (const c of TRACKED_CATS) if (m.catCost[c] > max) { max = m.catCost[c]; dc = c; }
     m.dominantCat = dc;
   }
 
@@ -377,11 +392,7 @@ const processFile = (cfg, tagLookup, overrideLookup) => new Promise((resolve, re
       catQty: m.catQty,
       catProfit: m.catProfit,
       supCost: m.supCost,
-      styleByCat: {
-        Carpet: Object.fromEntries(m.styleByCat.Carpet),
-        'Hard Surface': Object.fromEntries(m.styleByCat['Hard Surface']),
-        Tile: Object.fromEntries(m.styleByCat.Tile),
-      },
+      styleByCat: Object.fromEntries(TRACKED_CATS.map(c => [c, Object.fromEntries(m.styleByCat[c])])),
       deliveredDate: m.deliveredDate,
     };
   }

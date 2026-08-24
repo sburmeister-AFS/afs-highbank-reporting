@@ -19,6 +19,8 @@
     --cat-carpet: #2a78d6;
     --cat-hard: #eb6834;
     --cat-tile: #1baf7a;
+    --cat-carpettile: #8b5cf6;
+    --cat-rolledgoods: #c9962e;
     --good: #006300;
     --good-bg: #e6f4e6;
     --critical: #d03b3b;
@@ -38,6 +40,8 @@
       --cat-carpet: #3987e5;
       --cat-hard: #d95926;
       --cat-tile: #199e70;
+      --cat-carpettile: #a78bfa;
+      --cat-rolledgoods: #d9ab4a;
       --good: #0ca30c;
       --good-bg: #123312;
       --critical: #e66767;
@@ -57,6 +61,8 @@
     --cat-carpet: #3987e5;
     --cat-hard: #d95926;
     --cat-tile: #199e70;
+    --cat-carpettile: #a78bfa;
+    --cat-rolledgoods: #d9ab4a;
     --good: #0ca30c;
     --good-bg: #123312;
     --critical: #e66767;
@@ -306,6 +312,8 @@
       <button data-tab="Carpet"><span class="dot" style="background:var(--cat-carpet)"></span>Carpet</button>
       <button data-tab="Hard Surface"><span class="dot" style="background:var(--cat-hard)"></span>Hard Surface</button>
       <button data-tab="Tile"><span class="dot" style="background:var(--cat-tile)"></span>Tile</button>
+      <button data-tab="Carpet Tile"><span class="dot" style="background:var(--cat-carpettile)"></span>Carpet Tile</button>
+      <button data-tab="Rolled Goods"><span class="dot" style="background:var(--cat-rolledgoods)"></span>Rolled Goods</button>
       <button data-tab="leaderboard">Leaderboard</button>
       <button data-tab="products">Products</button>
     </nav>
@@ -323,8 +331,16 @@ const VIEWER_EMAIL = 'highbank-viewer@afsgroup.local';
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const CATS = ['Carpet', 'Hard Surface', 'Tile'];
-const CAT_COLOR = { 'Carpet': 'var(--cat-carpet)', 'Hard Surface': 'var(--cat-hard)', 'Tile': 'var(--cat-tile)' };
+// Carpet Tile (PC 4) and Rolled Goods/Sheet Vinyl (PC 2) added 2026-08-21 —
+// Laminate (PC 7) and unfinished Hardwood (PC 11) fold into Hard Surface
+// instead of getting their own tab (Scott's call). See catFor() in
+// build_from_csv.js for the PC-code mapping this all derives from.
+const CATS = ['Carpet', 'Hard Surface', 'Tile', 'Carpet Tile', 'Rolled Goods'];
+const CAT_COLOR = {
+  'Carpet': 'var(--cat-carpet)', 'Hard Surface': 'var(--cat-hard)', 'Tile': 'var(--cat-tile)',
+  'Carpet Tile': 'var(--cat-carpettile)', 'Rolled Goods': 'var(--cat-rolledgoods)',
+};
+const CAT_ABBR = { 'Carpet': 'Carp', 'Hard Surface': 'HS', 'Tile': 'Tile', 'Carpet Tile': 'CT', 'Rolled Goods': 'RG' };
 
 // Low-volume channels folded into a single "Other" row on every Channel Mix
 // table — Overstock/Commercial/Supplies/Capital Improve individually aren't
@@ -1156,7 +1172,7 @@ function renderHotColdTable(entries, label) {
   `;
 }
 
-const catAbbr = (cats) => [...cats].map(c => c === 'Carpet' ? 'Carp' : c === 'Hard Surface' ? 'HS' : 'Tile').join('/');
+const catAbbr = (cats) => [...cats].map(c => CAT_ABBR[c] || c).join('/');
 
 function topStylesByCost(rows, n) {
   const m = new Map();
@@ -1670,11 +1686,15 @@ function topEntriesByCategory(rows, keyFn, n, metric) {
   const m = new Map();
   rows.forEach(r => {
     const k = keyFn(r);
-    if (!m.has(k)) m.set(k, { rev: 0, profit: 0, byCat: { Carpet: 0, 'Hard Surface': 0, Tile: 0 } });
+    if (!m.has(k)) {
+      const byCat = {};
+      CATS.forEach(c => { byCat[c] = 0; });
+      m.set(k, { rev: 0, profit: 0, byCat });
+    }
     const e = m.get(k);
     e.rev += (+r.revenue) || 0;
     e.profit += (+r.profit) || 0;
-    if (metric !== 'margin') e.byCat[r.category] += (+r[metric]) || 0;
+    if (metric !== 'margin' && r.category in e.byCat) e.byCat[r.category] += (+r[metric]) || 0;
   });
   const all = [...m.entries()].map(([key, e]) => {
     if (metric === 'margin') return { key, total: e.rev > 0 ? e.profit / e.rev : 0, byCat: null };
