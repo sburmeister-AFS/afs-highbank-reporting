@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Stocking Report Dashboard</title>
 <script src="supabase.js"></script>
+<script src="jspdf.umd.min.js"></script>
+<script src="jspdf.plugin.autotable.min.js"></script>
 <style>
   :root {
     color-scheme: light;
@@ -217,6 +219,21 @@
   .product-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
   .product-controls input[type="text"] { min-width: 260px; }
   .product-count { font-size: 12px; color: var(--text-muted); }
+  #product-view-btn { cursor: pointer; }
+  #product-view-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .cat-pill.pv-cat-btn { display: inline-flex; align-items: center; gap: 6px; }
+  .pv-cat-btn .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  tr.pv-style-row { cursor: pointer; }
+  tr.pv-style-row:hover td { background: var(--gridline); }
+  tr.pv-style-row.open td { font-weight: 600; }
+  tr.pv-total-row td { font-weight: 700; border-top: 2px solid var(--gridline); }
+  #pv-expand-all, #pv-collapse-all { cursor: pointer; }
+  tr.pv-style-row .chev { display: inline-block; width: 14px; font-size: 15px; color: var(--text-muted); }
+  tr.pv-color-row td { background: var(--page); font-size: 12.5px; }
+  tr.pv-color-row td:first-child { padding-left: 38px; color: var(--text-secondary); }
+  th.pv-sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  .pv-delta-up { color: var(--good); }
+  .pv-delta-down { color: var(--critical); }
   th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
   th.sortable:hover { color: var(--text-secondary); }
 
@@ -252,6 +269,34 @@
   .chart-tooltip .tt-value { color: var(--text-primary); font-weight: 700; margin-left: auto; padding-left: 10px; font-variant-numeric: tabular-nums; }
   .imputed-note { font-size: 11.5px; color: var(--text-muted); margin: -10px 0 20px; }
   .imputed-note strong { color: var(--text-secondary); }
+
+  /* ---- export report dialog ---- */
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
+  #export-overlay {
+    display: none; position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.45);
+    align-items: center; justify-content: center; padding: 16px;
+  }
+  #export-overlay .dialog {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+    padding: 22px 22px 18px; width: 440px; max-width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+  }
+  #export-overlay h3 { margin: 0 0 4px; font-size: 17px; }
+  #export-overlay .sub { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 14px; }
+  #export-overlay .field-row { display: flex; gap: 10px; margin-bottom: 12px; }
+  #export-overlay label.f { flex: 1; font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; color: var(--text-muted); display: flex; flex-direction: column; gap: 4px; }
+  #export-overlay input[type="date"] {
+    font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--gridline);
+    background: var(--page); color: var(--text-primary); font-family: inherit;
+  }
+  #export-overlay .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  #export-overlay .presets button { font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--gridline); background: var(--surface-1); color: var(--text-secondary); cursor: pointer; }
+  #export-overlay .presets button:hover { border-color: var(--accent); color: var(--text-primary); }
+  #export-overlay .scope { font-size: 12px; color: var(--text-secondary); background: var(--page); border: 1px solid var(--gridline); border-radius: 8px; padding: 9px 11px; margin-bottom: 14px; line-height: 1.5; }
+  #export-overlay .actions { display: flex; justify-content: flex-end; gap: 8px; }
+  #export-overlay .actions .btn { cursor: pointer; }
+  #export-overlay .f-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+  #export-overlay #export-programs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #export-err { color: var(--critical); font-size: 12px; min-height: 16px; margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -284,6 +329,8 @@
           <span>to</span>
           <input type="month" id="range-to" />
         </div>
+        <button class="btn" id="product-view-btn">Product View</button>
+        <button class="btn btn-primary" id="export-btn">Export Report</button>
       </div>
     </header>
 
@@ -321,6 +368,34 @@
     <div id="content"></div>
 
     <footer class="foot">Program-line basis (delivered sales, NORMAL service type). Bundled-invoice lines are imputed to whole-job margin — see the note under each period's KPIs for the exact share. A leading <strong>*</strong> flags a sourcing note: on a color name, that color is non-stock (special order); on a Tile style name, that item is quick-ship.</footer>
+  </div>
+</div>
+
+<div id="export-overlay">
+  <div class="dialog" role="dialog" aria-labelledby="export-title">
+    <h3 id="export-title">Export Report</h3>
+    <p class="sub">Builds a PDF for the dates you pick, compared to the same dates last year.</p>
+    <div class="presets" id="export-presets">
+      <button data-preset="lastWeek">Last Week</button>
+      <button data-preset="lastMonth">Last Month</button>
+      <button data-preset="mtd">Month to Date</button>
+      <button data-preset="lastQuarter">Last Quarter</button>
+      <button data-preset="qtd">Quarter to Date</button>
+      <button data-preset="ytd">Year to Date</button>
+      <button data-preset="t12">Last 12 Months</button>
+    </div>
+    <div class="f-label">Programs</div>
+    <div class="presets" id="export-programs"></div>
+    <div class="field-row">
+      <label class="f">From<input type="date" id="export-from" /></label>
+      <label class="f">To<input type="date" id="export-to" /></label>
+    </div>
+    <div class="scope" id="export-scope"></div>
+    <div id="export-err"></div>
+    <div class="actions">
+      <button class="btn" id="export-cancel">Cancel</button>
+      <button class="btn btn-primary" id="export-go">Download PDF</button>
+    </div>
   </div>
 </div>
 
@@ -421,6 +496,23 @@ let rankCategoryFilter = 'All'; // 'All' | 'Carpet' | 'Hard Surface' | 'Tile' �
 let productSearch = ''; // Products tab — free-text filter over style/color/category
 let productSort = { key: 'cost', dir: 'desc' }; // Products tab — active sort column/direction
 let productStoreFilter = 'All'; // Products tab — 'All' | a store code
+let productViewOpen = false; // header "Product View" button — page-wide style/color table instead of the tab layout
+const pvPcs = new Set(); // Product View PC-code pills, multi-select — empty = all product codes
+// Every PC code catFor() in build_from_csv.js keeps, named per "PC - Excel
+// List.xlsx" (duplicated-word typos on 10/11 cleaned up). cat drives the pill dot color.
+const PV_PCS = [
+  { pc: 1, name: 'Carpet', cat: 'Carpet' },
+  { pc: 2, name: 'Vinyl', cat: 'Rolled Goods' },
+  { pc: 4, name: 'Carpet Tile', cat: 'Carpet Tile' },
+  { pc: 6, name: 'LVP, LVT, WPC & SPC', cat: 'Hard Surface' },
+  { pc: 7, name: 'Laminate', cat: 'Hard Surface' },
+  { pc: 10, name: 'Wood - Prefinished', cat: 'Hard Surface' },
+  { pc: 11, name: 'Wood - Unfinished', cat: 'Hard Surface' },
+  { pc: 22, name: 'Tile & Bullnose', cat: 'Tile' },
+];
+let pvSearch = ''; // Product View free-text filter
+let pvSort = { key: 'cost', dir: 'desc' }; // Product View sort column/direction
+const pvExpanded = new Set(); // Product View styles currently showing their colors
 
 // ---------------- formatting ----------------
 const fmt$ = (n) => {
@@ -510,7 +602,10 @@ async function loadData() {
     return;
   }
 
-  RAW_ROWS = rows;
+  // RFMS appends a dye-lot letter to the sold color ("LANDON-E", "INVERNESS-H")
+  // for the same physical color — fold those into the base color so a style
+  // doesn't show one row per dye lot. Same rule as lib/normalizeKey.js.
+  RAW_ROWS = rows.map(r => r.color ? { ...r, color: String(r.color).replace(/-[A-Za-z]{1,2}$/, '') } : r);
   applyCostBasis();
 
   // hb_jobs (whole-invoice totals) power the KPI-card flip to "total revenue
@@ -803,6 +898,15 @@ function kpiValDelta(cur, prior, fmtFn, hasPrior, deltaFn) {
   return { value: fmtFn(cur), delta: hasPrior ? deltaFn(cur, prior) : null };
 }
 
+// KPI cards on a program-scoped view (Overall/Category/Channel/Store) are
+// labeled "<program> Revenue" etc. so it's clear which slice they total —
+// but that only reads correctly when exactly one program is selected. With
+// 2+ programs active the label collapses to the plain metric name instead
+// of naming just one of the several programs it actually covers.
+function programKpiPrefix() {
+  return activeProgram.size === 1 ? [...activeProgram][0] + ' ' : '';
+}
+
 function flippableKpiCard(metricKey, hbLabel, hb, jobLabel, job) {
   const label = (kpiFlipped ? jobLabel : hbLabel) + (RAW_JOBS.length ? ' ⇄' : '');
   const value = kpiFlipped ? job.value : hb.value;
@@ -927,6 +1031,39 @@ document.getElementById('tabs').addEventListener('click', (e) => {
 
 // ---------------- category / channel / style / color drill-down ----------------
 document.getElementById('content').addEventListener('click', (e) => {
+  if (productViewOpen) {
+    const pvCat = e.target.closest('button[data-pvcat]');
+    if (pvCat) {
+      const v = pvCat.dataset.pvcat;
+      if (v === 'All') pvPcs.clear();
+      else { const pc = +v; if (pvPcs.has(pc)) pvPcs.delete(pc); else pvPcs.add(pc); }
+      pvExpanded.clear();
+      render();
+      return;
+    }
+    const pvTh = e.target.closest('th.pv-sortable');
+    if (pvTh) {
+      const key = pvTh.dataset.pvkey;
+      if (pvSort.key === key) pvSort.dir = pvSort.dir === 'asc' ? 'desc' : 'asc';
+      else pvSort = { key, dir: (key === 'style' || key === 'category') ? 'asc' : 'desc' };
+      render();
+      return;
+    }
+    const pvRow = e.target.closest('tr.pv-style-row');
+    if (pvRow) {
+      const st = pvRow.dataset.style;
+      if (pvExpanded.has(st)) pvExpanded.delete(st); else pvExpanded.add(st);
+      updateProductViewTable();
+      return;
+    }
+    if (e.target.closest('#pv-expand-all')) {
+      document.querySelectorAll('tr.pv-style-row').forEach(r => pvExpanded.add(r.dataset.style));
+      updateProductViewTable();
+      return;
+    }
+    if (e.target.closest('#pv-collapse-all')) { pvExpanded.clear(); updateProductViewTable(); return; }
+    return;
+  }
   const programRow = e.target.closest('tr.program-row');
   if (programRow) {
     selectOnlyProgram(programRow.dataset.program);
@@ -1124,6 +1261,7 @@ document.getElementById('content').addEventListener('click', (e) => {
 // drop focus out of the search box, so this updates just the table body
 // (buildProductRows()/updateProductTable() below) instead of calling render().
 document.getElementById('content').addEventListener('input', (e) => {
+  if (e.target.id === 'pv-search') { pvSearch = e.target.value; updateProductViewTable(); return; }
   const searchBox = e.target.closest('#product-search');
   if (!searchBox) return;
   productSearch = searchBox.value;
@@ -1249,12 +1387,15 @@ function categoryExpandRow(cat, curRows) {
 // needs, and nothing else would trigger that recalculation.
 function render() {
   renderContent();
+  // Product View replaces the tab layout, so the tab strip hides while it's open.
+  document.getElementById('tabs').style.display = (productViewOpen || activeProgram.size === 0) ? 'none' : '';
   updateStickyOffsets();
 }
 
 function renderContent() {
   if (!selectedPeriod) return;
   const content = document.getElementById('content');
+  if (productViewOpen) { content.innerHTML = renderProductView(); return; }
   if (activeProgram.size === 0) { content.innerHTML = renderAllPrograms(); wireTrendChart(); return; }
   if (channelReviewOf) { content.innerHTML = renderChannelReview(channelReviewOf); return; }
   if (storeReviewOf) { content.innerHTML = renderStoreReview(storeReviewOf); return; }
@@ -1337,11 +1478,11 @@ function renderChannelReview(chan) {
   const cogsShareOfMarket = marketCogs > 0 ? hbCogsLoaded / marketCogs : null;
 
   const kpis = [
-    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
-    kpiCard('HB Share of total COGS', fmtPct(cogsShareOfMarket), null),
+    flippableKpiCard('revenue', `${programKpiPrefix()}Revenue`, kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `${programKpiPrefix()}COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', `${programKpiPrefix()}Profit`, kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', `${programKpiPrefix()}Margin`, kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
+    kpiCard(`${programKpiPrefix()}Share of total COGS`, fmtPct(cogsShareOfMarket), null),
     fifthKpi,
   ].join('');
 
@@ -1419,10 +1560,10 @@ function renderStoreReview(storeCode) {
   const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
+    flippableKpiCard('revenue', `${programKpiPrefix()}Revenue`, kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `${programKpiPrefix()}COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', `${programKpiPrefix()}Profit`, kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', `${programKpiPrefix()}Margin`, kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
@@ -1886,10 +2027,10 @@ function renderOverall() {
   const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
+    flippableKpiCard('revenue', `${programKpiPrefix()}Revenue`, kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `${programKpiPrefix()}COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', `${programKpiPrefix()}Profit`, kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', `${programKpiPrefix()}Margin`, kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
@@ -2147,10 +2288,10 @@ function renderCategory(cat) {
   const hasPriorJ = priorJobs.length > 0;
 
   const kpis = [
-    flippableKpiCard('revenue', 'HB Revenue', kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('cost', `HB COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('profit', 'HB Profit', kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
-    flippableKpiCard('margin', 'HB Margin', kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
+    flippableKpiCard('revenue', `${programKpiPrefix()}Revenue`, kpiValDelta(cur.rev, prior.rev, fmt$, hasPrior, fmtDelta), 'Total Revenue', kpiValDelta(curJ.rev, priorJ.rev, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('cost', `${programKpiPrefix()}COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(cur.cost, prior.cost, fmt$, hasPrior, fmtDelta), `Total COGS (${costBasis === 'loaded' ? 'Loaded' : 'Unloaded'})`, kpiValDelta(curJ.cost, priorJ.cost, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('profit', `${programKpiPrefix()}Profit`, kpiValDelta(cur.profit, prior.profit, fmt$, hasPrior, fmtDelta), 'Total Profit', kpiValDelta(curJ.profit, priorJ.profit, fmt$, hasPriorJ, fmtDelta)),
+    flippableKpiCard('margin', `${programKpiPrefix()}Margin`, kpiValDelta(cur.margin, prior.margin, fmtPct, hasPrior, fmtPP), 'Whole-Job Margin', kpiValDelta(curJ.margin, priorJ.margin, fmtPct, hasPriorJ, fmtPP)),
     fifthKpi,
   ].join('');
 
@@ -2440,6 +2581,197 @@ function renderProducts() {
   `;
 }
 
+// ---------------- Product View ----------------
+// Header "Product View" button flips the whole page to a style-level table
+// (instead of the program/category tab layout). Respects the program and
+// division pills, the period selector and the cost-basis toggle — it reads
+// the same ALL_ROWS every other view does — plus its own category pills and
+// search. Click a style to list every color under it.
+function pvEntries(rows) {
+  const m = new Map();
+  const blank = () => ({ cats: new Set(), pcs: new Set(), programs: new Set(), qty: 0, cost: 0, rev: 0, profit: 0, priorRev: 0 });
+  rows.forEach(r => {
+    const style = r.style || '(unknown)';
+    const color = r.color || '(none)';
+    if (!m.has(style)) m.set(style, { style, ...blank(), colors: new Map() });
+    const s = m.get(style);
+    if (!s.colors.has(color)) s.colors.set(color, { color, ...blank() });
+    const c = s.colors.get(color);
+    for (const e of [s, c]) {
+      if (r._prior) { e.priorRev += +r.revenue; continue; }
+      e.cats.add(r.category); if (r.pc != null) e.pcs.add(+r.pc); e.programs.add(r.program);
+      e.qty += +r.qty; e.cost += +r.cost; e.rev += +r.revenue; e.profit += +r.profit;
+    }
+  });
+  return [...m.values()];
+}
+
+const pvPcText = (pcs) => [...pcs].sort((a, b) => a - b).join(', ') || '–';
+
+function pvSortVal(e, key) {
+  switch (key) {
+    case 'style': return (e.style || e.color).toLowerCase();
+    case 'category': return pvPcText(e.pcs);
+    case 'colors': return e.colors ? e.colors.size : 0;
+    case 'qty': return e.qty;
+    case 'rev': return e.rev;
+    case 'margin': return e.rev > 0 ? e.profit / e.rev : null;
+    case 'yoy': return e.priorRev > 0 ? e.rev / e.priorRev - 1 : null;
+    default: return e.cost;
+  }
+}
+
+// Nulls (no revenue / no prior year) always sort to the bottom.
+function pvSortList(list, sort) {
+  const dir = sort.dir === 'asc' ? 1 : -1;
+  return [...list].sort((a, b) => {
+    const av = pvSortVal(a, sort.key), bv = pvSortVal(b, sort.key);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (typeof av === 'string') return av.localeCompare(bv) * dir;
+    return (av - bv) * dir;
+  });
+}
+
+function pvYoyCell(e, hasPrior) {
+  if (!hasPrior) return '<td class="num">–</td>';
+  if (!(e.priorRev > 0)) return `<td class="num">${e.rev > 0 ? 'New' : '–'}</td>`;
+  const d = e.rev / e.priorRev - 1;
+  const cls = d > 0.0005 ? 'pv-delta-up' : d < -0.0005 ? 'pv-delta-down' : '';
+  return `<td class="num ${cls}">${d > 0 ? '+' : ''}${(d * 100).toFixed(1)}%</td>`;
+}
+
+function pvRowCells(e, label, hasPrior, showColors) {
+  return `
+      <td>${label}</td>
+      <td>${pvPcText(e.pcs)}</td>
+      <td>${[...e.programs].map(programLabel).join(', ')}</td>
+      <td class="num">${showColors ? e.colors.size : ''}</td>
+      <td class="num">${fmt$(e.cost)}</td>
+      <td class="num">${fmtNum(e.qty)}</td>
+      <td class="num">${fmt$(e.rev)}</td>
+      <td class="num">${fmtPct(e.rev > 0 ? e.profit / e.rev : null)}</td>
+      ${pvYoyCell(e, hasPrior)}`;
+}
+
+function buildProductViewRows() {
+  const catOk = (r) => pvPcs.size === 0 || pvPcs.has(+r.pc);
+  const cur = rowsFor(selectedPeriod.cur).filter(catOk);
+  const prior = rowsFor(selectedPeriod.prior).filter(catOk).map(r => ({ ...r, _prior: true }));
+  const hasPrior = prior.length > 0;
+  // Styles/colors that only sold in the prior year are dropped — this is a
+  // review of what moved in the selected period.
+  const sold = (e) => e.cats.size > 0;
+  let styles = pvEntries([...cur, ...prior]).filter(sold);
+  styles.forEach(s => { for (const [k, c] of s.colors) if (!sold(c)) s.colors.delete(k); });
+  const q = pvSearch.trim().toLowerCase();
+  if (q) {
+    styles = styles.filter(s => s.style.toLowerCase().includes(q) || [...s.colors.keys()].some(c => c.toLowerCase().includes(q)));
+  }
+  styles = pvSortList(styles, pvSort);
+  const colorSort = ['category', 'colors'].includes(pvSort.key) ? { key: 'cost', dir: 'desc' } : pvSort;
+  const tot = styles.reduce((t, s) => { t.cost += s.cost; t.qty += s.qty; t.rev += s.rev; t.profit += s.profit; t.priorRev += s.priorRev; return t; },
+    { cost: 0, qty: 0, rev: 0, profit: 0, priorRev: 0 });
+  const rowsHtml = styles.map(s => {
+    const isOpen = pvExpanded.has(s.style);
+    let html = `<tr class="pv-style-row ${isOpen ? 'open' : ''}" data-style="${s.style.replace(/"/g, '&quot;')}">
+      ${pvRowCells(s, `<span class="chev">${isOpen ? '▾' : '▸'}</span>${s.style}`, hasPrior, true)}
+    </tr>`;
+    if (isOpen) {
+      html += pvSortList([...s.colors.values()], colorSort).map(c =>
+        `<tr class="pv-color-row">${pvRowCells(c, c.color, hasPrior, false)}</tr>`).join('');
+    }
+    return html;
+  }).join('') || `<tr><td colspan="9" class="empty">No products match.</td></tr>`;
+  const totalHtml = styles.length ? `<tr class="pv-total-row">
+      <td>Total</td><td></td><td></td>
+      <td class="num">${styles.reduce((n, s) => n + s.colors.size, 0).toLocaleString()}</td>
+      <td class="num">${fmt$(tot.cost)}</td>
+      <td class="num">${fmtNum(tot.qty)}</td>
+      <td class="num">${fmt$(tot.rev)}</td>
+      <td class="num">${fmtPct(tot.rev > 0 ? tot.profit / tot.rev : null)}</td>
+      ${pvYoyCell(tot, hasPrior)}
+    </tr>` : '';
+  return { rowsHtml: rowsHtml + totalHtml, count: styles.length };
+}
+
+function pvArrow(key) {
+  if (pvSort.key !== key) return '';
+  return pvSort.dir === 'asc' ? ' ▲' : ' ▼';
+}
+
+const pvCountText = (count) => `${count.toLocaleString()} style${count === 1 ? '' : 's'}`;
+
+// Swaps only the tbody (search keystrokes, expand/collapse) so the search
+// box keeps focus and the scroll position doesn't jump.
+function updateProductViewTable() {
+  const tbody = document.getElementById('pv-tbody');
+  if (!tbody) return;
+  const { rowsHtml, count } = buildProductViewRows();
+  tbody.innerHTML = rowsHtml;
+  const countEl = document.getElementById('pv-count');
+  if (countEl) countEl.textContent = pvCountText(count);
+}
+
+function renderProductView() {
+  const { rowsHtml, count } = buildProductViewRows();
+  const scope = [
+    activeProgram.size === 0 ? 'All Programs' : [...activeProgram].map(programLabel).join(', '),
+    activeDivision.size === 0 ? 'All Divisions' : [...activeDivision].map(divisionLabel).join(', '),
+    selectedPeriod.label,
+    costBasis === 'loaded' ? 'Loaded cost' : 'Unloaded cost',
+  ].join(' · ');
+  // Only codes with at least one line in the data get a pill (PC 2 / 11 have none today).
+  const pcsInData = new Set(RAW_ROWS.map(r => +r.pc));
+  const catBtns = ['All', ...PV_PCS.filter(p => pcsInData.has(p.pc))].map(cat =>
+    `<button class="cat-pill pv-cat-btn ${(cat === 'All' ? pvPcs.size === 0 : pvPcs.has(cat.pc)) ? 'active' : ''}" data-pvcat="${cat === 'All' ? 'All' : cat.pc}">${cat === 'All' ? 'All Product Codes' : `<span class="dot" style="background:${CAT_COLOR[cat.cat]}"></span>${cat.pc} - ${cat.name}`}</button>`
+  ).join('');
+  const th = (key, label, num) => `<th class="${num ? 'num ' : ''}pv-sortable" data-pvkey="${key}">${label}${pvArrow(key)}</th>`;
+  return `
+    <div class="review-header">
+      <h2 class="review-title">All Products</h2>
+      <span class="product-count">${scope}</span>
+    </div>
+    <div class="cat-pills" style="flex-wrap:wrap;">${catBtns}</div>
+    <div class="product-controls">
+      <input id="pv-search" type="text" placeholder="Search style or color…" value="${pvSearch.replace(/"/g, '&quot;')}" />
+      <span>
+        <button class="btn" id="pv-expand-all">Expand all</button>
+        <button class="btn" id="pv-collapse-all">Collapse all</button>
+        <span id="pv-count" class="product-count" style="margin-left:8px;">${pvCountText(count)}</span>
+      </span>
+    </div>
+    <div class="table-scroll">
+      <table class="card">
+        <thead><tr>
+          ${th('style', 'Style / Color')}
+          ${th('category', 'PC')}
+          <th>Program</th>
+          ${th('colors', 'Colors', true)}
+          ${th('cost', 'COGS', true)}
+          ${th('qty', 'Qty', true)}
+          ${th('rev', 'Revenue', true)}
+          ${th('margin', 'Margin', true)}
+          ${th('yoy', 'Rev YoY', true)}
+        </tr></thead>
+        <tbody id="pv-tbody">${rowsHtml}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function setProductView(open) {
+  productViewOpen = open;
+  pvExpanded.clear();
+  const btn = document.getElementById('product-view-btn');
+  btn.classList.toggle('active', open);
+  btn.textContent = open ? '← Dashboard View' : 'Product View';
+  window.scrollTo(0, 0);
+  render();
+}
+document.getElementById('product-view-btn').addEventListener('click', () => setProductView(!productViewOpen));
+
 // Keeps every sticky bar (program picker, division picker, tabs, KPI row)
 // correctly stacked under the header — heights vary (controls/pills wrap
 // onto a second line on narrow windows, nav.tabs collapses to 0 height on
@@ -2463,6 +2795,425 @@ window.addEventListener('resize', updateStickyOffsets);
 new ResizeObserver(updateStickyOffsets).observe(document.querySelector('header.top'));
 new ResizeObserver(updateStickyOffsets).observe(document.getElementById('program-tabs'));
 new ResizeObserver(updateStickyOffsets).observe(document.getElementById('division-tabs'));
+
+// ---------------- Export Report (PDF) ----------------
+// Day-level date range (del_date), independent of the page's month-based
+// period selector, but scoped by the page's current program / division /
+// Loaded-vs-Unloaded selections — ALL_ROWS already carries all three, so
+// the PDF always matches what the dashboard shows for the same filters.
+// Prior year = the same calendar dates one year earlier.
+const isoDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const parseIso = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const fmtLongDate = (s) => parseIso(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+function shiftYearIso(s, years) {
+  const [y, m, d] = s.split('-').map(Number);
+  const lastDay = new Date(y + years, m, 0).getDate(); // Feb 29 -> Feb 28
+  return `${y + years}-${String(m).padStart(2, '0')}-${String(Math.min(d, lastDay)).padStart(2, '0')}`;
+}
+
+function dataThroughIso() {
+  let max = null;
+  RAW_ROWS.forEach(r => { if (r.del_date && (!max || r.del_date > max)) max = r.del_date; });
+  return max;
+}
+
+function exportPresetRange(preset) {
+  const end = parseIso(dataThroughIso() || isoDate(new Date()));
+  const y = end.getFullYear(), m = end.getMonth();
+  const q = Math.floor(m / 3);
+  switch (preset) {
+    // Most recent complete Sunday-Saturday week, by today's calendar date
+    // (not the data-through date) — on a Sunday, that's the week that just ended.
+    case 'lastWeek': {
+      const today = new Date();
+      const thisSunday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
+      return [new Date(thisSunday.getFullYear(), thisSunday.getMonth(), thisSunday.getDate() - 7),
+              new Date(thisSunday.getFullYear(), thisSunday.getMonth(), thisSunday.getDate() - 1)];
+    }
+    case 'lastMonth': return [new Date(y, m - 1, 1), new Date(y, m, 0)];
+    case 'mtd': return [new Date(y, m, 1), end];
+    case 'lastQuarter': return [new Date(y, q * 3 - 3, 1), new Date(y, q * 3, 0)];
+    case 'qtd': return [new Date(y, q * 3, 1), end];
+    case 'ytd': return [new Date(y, 0, 1), end];
+    case 't12': return [new Date(y, m - 11, 1), end];
+  }
+  return null;
+}
+
+// The dialog's own program picker — seeded from the page's program pills
+// each time the dialog opens, but changing it here doesn't touch the page.
+let exportPrograms = new Set();
+
+function renderExportProgramPills() {
+  document.getElementById('export-programs').innerHTML = ['ALL', ...PROGRAMS].map(p => {
+    const on = p === 'ALL' ? exportPrograms.size === 0 : exportPrograms.has(p);
+    return `<button class="${on ? 'active' : ''}" data-program="${p.replace(/&/g, '&amp;')}">${p === 'ALL' ? 'All Programs' : programLabel(p).replace(/&/g, '&amp;')}</button>`;
+  }).join('');
+}
+
+document.getElementById('export-programs').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-program]');
+  if (!btn) return;
+  const p = btn.dataset.program;
+  if (p === 'ALL') exportPrograms.clear();
+  else if (exportPrograms.has(p)) exportPrograms.delete(p);
+  else exportPrograms.add(p);
+  if (exportPrograms.size === PROGRAMS.length) exportPrograms.clear(); // every program picked = All
+  renderExportProgramPills();
+  updateExportScope();
+});
+
+function updateExportScope() {
+  const s = exportScopeText();
+  const through = dataThroughIso();
+  document.getElementById('export-scope').innerHTML =
+    `<strong>Divisions:</strong> ${s.divisions}<br><strong>Cost basis:</strong> ${s.basis}` +
+    (through ? `<br><strong>Data through:</strong> ${fmtLongDate(through)}` : '') +
+    `<br><span style="color:var(--text-muted)">Division and cost basis follow the filters at the top of the page.</span>`;
+}
+
+function exportScopeText() {
+  const programs = exportPrograms.size === 0 ? 'All Programs' : [...exportPrograms].map(programLabel).join(', ');
+  const divisions = activeDivision.size === 0 ? 'All Divisions' : [...activeDivision].map(divisionLabel).join(', ');
+  return { programs, divisions, basis: costBasis === 'loaded' ? 'Loaded Cost' : 'Unloaded Cost' };
+}
+
+function openExportDialog() {
+  if (!RAW_ROWS.length) return;
+  const fromEl = document.getElementById('export-from');
+  const toEl = document.getElementById('export-to');
+  if (!fromEl.value || !toEl.value) {
+    const [f, t] = exportPresetRange('ytd');
+    fromEl.value = isoDate(f); toEl.value = isoDate(t);
+  }
+  exportPrograms = new Set(activeProgram);
+  renderExportProgramPills();
+  updateExportScope();
+  document.getElementById('export-err').textContent = '';
+  document.getElementById('export-overlay').style.display = 'flex';
+}
+
+function closeExportDialog() { document.getElementById('export-overlay').style.display = 'none'; }
+
+document.getElementById('export-btn').addEventListener('click', openExportDialog);
+document.getElementById('export-cancel').addEventListener('click', closeExportDialog);
+document.getElementById('export-overlay').addEventListener('click', (e) => { if (e.target.id === 'export-overlay') closeExportDialog(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeExportDialog(); });
+document.getElementById('export-presets').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-preset]');
+  if (!btn) return;
+  const [f, t] = exportPresetRange(btn.dataset.preset);
+  document.getElementById('export-from').value = isoDate(f);
+  document.getElementById('export-to').value = isoDate(t);
+});
+document.getElementById('export-go').addEventListener('click', () => {
+  let from = document.getElementById('export-from').value;
+  let to = document.getElementById('export-to').value;
+  const errEl = document.getElementById('export-err');
+  if (!from || !to) { errEl.textContent = 'Pick both a start and end date.'; return; }
+  if (to < from) [from, to] = [to, from];
+  const report = buildReportData(from, to);
+  if (report.cur.lines === 0) { errEl.textContent = 'No sales in that date range for the current filters.'; return; }
+  try {
+    generateReportPdf(report);
+    closeExportDialog();
+  } catch (err) {
+    console.error(err);
+    errEl.textContent = 'Could not build the PDF: ' + err.message;
+  }
+});
+
+function rowsBetween(from, to) {
+  return RAW_ROWS
+    .filter(r => r.del_date && r.del_date >= from && r.del_date <= to)
+    .filter(r => exportPrograms.size === 0 || exportPrograms.has(r.program))
+    .filter(r => activeDivision.size === 0 || activeDivision.has(channelKey(r.channel)))
+    .map(r => costBasis === 'loaded' ? r : { ...r, cost: r.unloaded_cost, revenue: r.unloaded_revenue, profit: r.unloaded_profit });
+}
+
+function groupAgg(rows, keyFn) {
+  const m = new Map();
+  rows.forEach(r => {
+    const k = keyFn(r);
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(r);
+  });
+  const out = new Map();
+  m.forEach((list, k) => out.set(k, agg(list)));
+  return out;
+}
+
+function buildReportData(from, to) {
+  const pFrom = shiftYearIso(from, -1), pTo = shiftYearIso(to, -1);
+  const curRows = rowsBetween(from, to);
+  const priorRows = rowsBetween(pFrom, pTo);
+  const through = dataThroughIso();
+
+  // Months touched by the range; a partial first/last month is labeled
+  // with its actual days so it isn't mistaken for a full month.
+  const months = [];
+  const start = parseIso(from), end = parseIso(to);
+  for (let d = new Date(start.getFullYear(), start.getMonth(), 1); d <= end; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    const mStart = d < start ? start : d;
+    const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const mEnd = monthEnd > end ? end : monthEnd;
+    const partial = mStart.getDate() !== 1 || mEnd.getDate() !== monthEnd.getDate();
+    const label = partial
+      ? `${MONTH_NAMES[d.getMonth()]} ${mStart.getDate()}-${mEnd.getDate()}, ${d.getFullYear()}`
+      : `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+    const f = isoDate(mStart), t = isoDate(mEnd);
+    months.push({
+      label,
+      cur: agg(curRows.filter(r => r.del_date >= f && r.del_date <= t)),
+      prior: agg(priorRows.filter(r => r.del_date >= shiftYearIso(f, -1) && r.del_date <= shiftYearIso(t, -1))),
+    });
+  }
+
+  const imputed = curRows.filter(r => r.is_imputed);
+  const curRev = curRows.reduce((s, r) => s + (+r.revenue), 0);
+
+  return {
+    from, to, pFrom, pTo, through,
+    scope: exportScopeText(),
+    cur: agg(curRows), prior: agg(priorRows),
+    hasPrior: priorRows.length > 0,
+    byProgram: { cur: groupAgg(curRows, r => r.program), prior: groupAgg(priorRows, r => r.program) },
+    byCategory: { cur: groupAgg(curRows, r => r.category), prior: groupAgg(priorRows, r => r.category) },
+    byChannel: { cur: groupAgg(curRows, r => channelKey(r.channel)), prior: groupAgg(priorRows, r => channelKey(r.channel)) },
+    byStore: { cur: groupAgg(curRows, r => r.store), prior: groupAgg(priorRows, r => r.store) },
+    bySalesperson: groupAgg(curRows, r => r.salesperson || '(none)'),
+    products: (() => {
+      const m = new Map();
+      curRows.forEach(r => {
+        const k = `${r.style}|${r.category}`;
+        if (!m.has(k)) m.set(k, { style: r.style, category: r.category, rows: [] });
+        m.get(k).rows.push(r);
+      });
+      return [...m.values()].map(e => ({ style: e.style, category: e.category, a: agg(e.rows) }))
+        .sort((a, b) => b.a.rev - a.a.rev);
+    })(),
+    months,
+    imputedLineShare: curRows.length ? imputed.length / curRows.length : 0,
+    imputedRevShare: curRev > 0 ? imputed.reduce((s, r) => s + (+r.revenue), 0) / curRev : 0,
+    retroactivePrograms: (exportPrograms.size === 0 ? PROGRAMS : [...exportPrograms]).filter(p => RETROACTIVE_TAG_PROGRAMS.has(p)),
+  };
+}
+
+function generateReportPdf(R) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 40;
+  const ACCENT = [42, 120, 214], INK = [11, 11, 11], MUTED = [110, 108, 102], GRID = [225, 224, 217];
+  const GOOD = [0, 120, 0], BAD = [208, 59, 59];
+
+  const money = (n) => n == null || !isFinite(n) ? '-' : (n < 0 ? '-$' : '$') + Math.round(Math.abs(n)).toLocaleString('en-US');
+  const pct = (n) => n == null || !isFinite(n) ? '-' : (n * 100).toFixed(1) + '%';
+  const int = (n) => n == null ? '-' : Math.round(n).toLocaleString('en-US');
+  const colored = (text, cls) => ({ content: text, styles: cls === 'good' ? { textColor: GOOD, fontStyle: 'bold' } : cls === 'bad' ? { textColor: BAD, fontStyle: 'bold' } : { textColor: MUTED } });
+  const yoy = (cur, prior) => {
+    if (!R.hasPrior) return colored('-', '');
+    if (!prior) return colored(cur ? 'new' : '-', '');
+    const d = (cur - prior) / Math.abs(prior);
+    return colored((d >= 0 ? '+' : '') + (d * 100).toFixed(1) + '%', d > 0.01 ? 'good' : d < -0.01 ? 'bad' : '');
+  };
+  const ppChg = (cur, prior) => {
+    if (!R.hasPrior || cur == null || prior == null) return colored('-', '');
+    const d = (cur - prior) * 100;
+    return colored((d >= 0 ? '+' : '') + d.toFixed(1) + ' pts', d > 0.3 ? 'good' : d < -0.3 ? 'bad' : '');
+  };
+  const cogsLabel = `COGS (${R.scope.basis.replace(' Cost', '')})`;
+
+  // ---- header band ----
+  doc.setFillColor(...ACCENT);
+  doc.rect(0, 0, W, 6, 'F');
+  doc.setTextColor(...INK);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(20);
+  const title = exportPrograms.size === 1 ? `${programLabel([...exportPrograms][0])} Program Report` : 'Stocking Programs Report';
+  doc.text(title, M, 44);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11.5);
+  doc.setTextColor(...INK);
+  doc.text(`${fmtLongDate(R.from)} - ${fmtLongDate(R.to)}`, M, 63);
+  doc.setFontSize(9); doc.setTextColor(...MUTED);
+  const scopeLine = [
+    exportPrograms.size === 1 ? null : R.scope.programs,
+    R.scope.divisions, R.scope.basis,
+    R.hasPrior ? `vs. ${fmtLongDate(R.pFrom)} - ${fmtLongDate(R.pTo)}` : 'No prior-year data for comparison',
+  ].filter(Boolean).join('   |   ');
+  doc.text(doc.splitTextToSize(scopeLine, W - 2 * M), M, 78);
+  let y = 96;
+  if (R.through && R.to > R.through) {
+    doc.setTextColor(...BAD);
+    doc.text(`Note: sales data currently runs through ${fmtLongDate(R.through)}; later dates in this range have no data yet.`, M, y - 4);
+    y += 10;
+  }
+
+  // ---- KPI tiles ----
+  const tiles = [
+    ['Revenue', money(R.cur.rev), yoy(R.cur.rev, R.prior.rev)],
+    [cogsLabel, money(R.cur.cost), yoy(R.cur.cost, R.prior.cost)],
+    ['Gross Profit', money(R.cur.profit), yoy(R.cur.profit, R.prior.profit)],
+    ['Margin', pct(R.cur.margin), ppChg(R.cur.margin, R.prior.margin)],
+  ];
+  const gap = 10, tw = (W - 2 * M - gap * 3) / 4, th = 62;
+  tiles.forEach(([label, value, delta], i) => {
+    const x = M + i * (tw + gap);
+    doc.setDrawColor(...GRID); doc.setFillColor(250, 250, 248);
+    doc.roundedRect(x, y, tw, th, 5, 5, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(7.5); doc.setTextColor(...MUTED);
+    doc.text(label.toUpperCase(), x + 10, y + 16);
+    doc.setFontSize(15.5); doc.setTextColor(...INK);
+    doc.text(value, x + 10, y + 36);
+    doc.setFontSize(8.5);
+    const dc = delta.styles.textColor || MUTED;
+    doc.setTextColor(...dc);
+    doc.text(R.hasPrior ? `${delta.content} vs. prior year` : 'no prior-year data', x + 10, y + 51);
+  });
+  y += th + 18;
+
+  const tableBase = {
+    margin: { left: M, right: M, top: 50, bottom: 46 },
+    theme: 'grid',
+    styles: { font: 'helvetica', fontSize: 8.5, cellPadding: { top: 4, bottom: 4, left: 6, right: 6 }, lineColor: GRID, lineWidth: 0.5, textColor: INK },
+    headStyles: { fillColor: ACCENT, textColor: 255, fontStyle: 'bold', fontSize: 8 },
+    alternateRowStyles: { fillColor: [248, 248, 246] },
+  };
+  const numCols = (from, to) => { const o = {}; for (let i = from; i <= to; i++) o[i] = { halign: 'right' }; return o; };
+  const section = (heading, opts) => {
+    // Move a table that would split across pages to a fresh page when it
+    // fits on one page by itself; longer tables just flow across pages.
+    const needed = 30 + (opts.body.length + 1) * 19;
+    if (y > H - 120 || (y + needed > H - 46 && needed < H - 100)) { doc.addPage(); y = 50; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(...INK);
+    doc.text(heading, M, y);
+    doc.autoTable({
+      ...tableBase, startY: y + 7, ...opts,
+      // columnStyles only reach body cells — mirror their alignment onto the header row
+      didParseCell: (d) => {
+        const cs = opts.columnStyles && opts.columnStyles[d.column.index];
+        if (d.section === 'head' && cs && cs.halign) d.cell.styles.halign = cs.halign;
+      },
+    });
+    y = doc.lastAutoTable.finalY + 22;
+  };
+  const totalRow = (cells) => cells.map(c => (typeof c === 'object' ? { ...c, styles: { ...c.styles, fontStyle: 'bold', fillColor: [236, 241, 250] } } : { content: c, styles: { fontStyle: 'bold', fillColor: [236, 241, 250] } }));
+
+  // ---- summary ----
+  const avg = (a) => a.invCount ? a.rev / a.invCount : null;
+  section('Summary', {
+    head: [['Metric', 'This Period', 'Prior Year', 'Change']],
+    body: [
+      ['Revenue', money(R.cur.rev), R.hasPrior ? money(R.prior.rev) : '-', yoy(R.cur.rev, R.prior.rev)],
+      [cogsLabel, money(R.cur.cost), R.hasPrior ? money(R.prior.cost) : '-', yoy(R.cur.cost, R.prior.cost)],
+      ['Gross Profit', money(R.cur.profit), R.hasPrior ? money(R.prior.profit) : '-', yoy(R.cur.profit, R.prior.profit)],
+      ['Margin', pct(R.cur.margin), R.hasPrior ? pct(R.prior.margin) : '-', ppChg(R.cur.margin, R.prior.margin)],
+      ['Orders (invoices)', int(R.cur.invCount), R.hasPrior ? int(R.prior.invCount) : '-', yoy(R.cur.invCount, R.prior.invCount)],
+      ['Avg Revenue per Order', money(avg(R.cur)), R.hasPrior ? money(avg(R.prior)) : '-', yoy(avg(R.cur), avg(R.prior))],
+    ],
+    columnStyles: numCols(1, 3),
+  });
+
+  // Generic breakdown table: name | Revenue | COGS | Profit | Margin | Margin chg | Rev YoY | Share of Rev
+  const breakdown = (heading, dimLabel, group, keys, nameFn) => {
+    const rows = keys
+      .map(k => ({ k, c: group.cur.get(k) || agg([]), p: group.prior.get(k) || agg([]) }))
+      .filter(e => e.c.lines > 0 || e.p.lines > 0)
+      .sort((a, b) => b.c.rev - a.c.rev);
+    if (rows.length < 2) return; // a one-row breakdown just repeats the summary
+    const body = rows.map(({ k, c, p }) => [
+      nameFn(k), money(c.rev), money(c.cost), money(c.profit), pct(c.margin),
+      ppChg(c.margin, p.margin), yoy(c.rev, p.rev), pct(R.cur.rev > 0 ? c.rev / R.cur.rev : 0),
+    ]);
+    body.push(totalRow(['Total', money(R.cur.rev), money(R.cur.cost), money(R.cur.profit), pct(R.cur.margin), ppChg(R.cur.margin, R.prior.margin), yoy(R.cur.rev, R.prior.rev), '100.0%']));
+    section(heading, {
+      head: [[dimLabel, 'Revenue', 'COGS', 'Profit', 'Margin', 'Margin Chg', 'Rev YoY', '% of Rev']],
+      body,
+      columnStyles: { 0: { cellWidth: 118 }, ...numCols(1, 7) },
+    });
+  };
+
+  if (exportPrograms.size !== 1) breakdown('By Program', 'Program', R.byProgram, PROGRAMS, programLabel);
+  breakdown('By Category', 'Category', R.byCategory, CATS, c => c);
+  breakdown('By Channel', 'Channel', R.byChannel, [...new Set([...R.byChannel.cur.keys(), ...R.byChannel.prior.keys()])], c => c === 'Other' ? 'Other' : titleCase(c));
+  breakdown('By Store', 'Store', R.byStore, [...new Set([...R.byStore.cur.keys(), ...R.byStore.prior.keys()])], storeLabel);
+
+  // ---- monthly trend ----
+  if (R.months.length > 1) {
+    const body = R.months.map(mo => [
+      mo.label, money(mo.cur.rev), money(mo.cur.cost), money(mo.cur.profit), pct(mo.cur.margin),
+      R.hasPrior ? money(mo.prior.rev) : '-', yoy(mo.cur.rev, mo.prior.rev),
+    ]);
+    body.push(totalRow(['Total', money(R.cur.rev), money(R.cur.cost), money(R.cur.profit), pct(R.cur.margin), R.hasPrior ? money(R.prior.rev) : '-', yoy(R.cur.rev, R.prior.rev)]));
+    section('Monthly Trend', {
+      head: [['Month', 'Revenue', 'COGS', 'Profit', 'Margin', 'PY Revenue', 'Rev YoY']],
+      body,
+      columnStyles: { 0: { cellWidth: 118 }, ...numCols(1, 6) },
+    });
+  }
+
+  // ---- top products ----
+  const topN = R.products.slice(0, 15);
+  if (topN.length) {
+    section(`Top ${topN.length} Products by Revenue`, {
+      head: [['#', 'Style', 'Category', 'Qty', 'Revenue', 'COGS', 'Margin', '% of Rev']],
+      body: topN.map((e, i) => [
+        String(i + 1), e.style || '(none)', e.category, int(e.a.qty), money(e.a.rev), money(e.a.cost), pct(e.a.margin),
+        pct(R.cur.rev > 0 ? e.a.rev / R.cur.rev : 0),
+      ]),
+      columnStyles: { 0: { cellWidth: 22, halign: 'right' }, 2: { cellWidth: 72 }, ...numCols(3, 7) },
+    });
+  }
+
+  // ---- top salespeople ----
+  const sp = [...R.bySalesperson.entries()].sort((a, b) => b[1].rev - a[1].rev).slice(0, 10);
+  if (sp.length) {
+    section(`Top ${sp.length} Salespeople by Revenue`, {
+      head: [['#', 'Salesperson', 'Orders', 'Revenue', 'COGS', 'Profit', 'Margin']],
+      body: sp.map(([name, a], i) => [String(i + 1), titleCase(name), int(a.invCount), money(a.rev), money(a.cost), money(a.profit), pct(a.margin)]),
+      columnStyles: { 0: { cellWidth: 22, halign: 'right' }, ...numCols(2, 6) },
+    });
+  }
+
+  // ---- notes ----
+  const notes = [
+    'Delivered-sales basis: sales are counted by delivery date, NORMAL service type only.',
+    `Cost basis: ${R.scope.basis.toLowerCase()}. Prior-year figures cover the same calendar dates one year earlier.`,
+    R.imputedLineShare > 0
+      ? `${pct(R.imputedLineShare)} of lines (${pct(R.imputedRevShare)} of revenue) are on bundled invoices; their revenue is estimated from the whole job's margin rather than billed line amounts.`
+      : 'Every figure is actual billed revenue (no bundled-invoice estimates in this range).',
+  ];
+  if (R.retroactivePrograms.length) {
+    notes.push(`${R.retroactivePrograms.map(programLabel).join(', ')} sales are matched to today's stocking list, so a sale made before an item's current program tag was set may be classified differently than it was at the time.`);
+  }
+  if (y > H - 110) { doc.addPage(); y = 50; }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(...INK);
+  doc.text('Notes', M, y);
+  y += 12;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...MUTED);
+  notes.forEach(n => {
+    const lines = doc.splitTextToSize('- ' + n, W - 2 * M);
+    if (y + lines.length * 10 > H - 46) { doc.addPage(); y = 50; }
+    doc.text(lines, M, y);
+    y += lines.length * 10 + 3;
+  });
+
+  // ---- page footers ----
+  const pages = doc.internal.getNumberOfPages();
+  const generated = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setDrawColor(...GRID); doc.line(M, H - 32, W - M, H - 32);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...MUTED);
+    doc.text(`AFS Group  |  ${title}  |  ${fmtLongDate(R.from)} - ${fmtLongDate(R.to)}`, M, H - 20);
+    doc.text(`Generated ${generated}  |  Page ${i} of ${pages}`, W - M, H - 20, { align: 'right' });
+  }
+
+  const scopeSlug = exportPrograms.size === 0 ? 'All Programs' : [...exportPrograms].map(programLabel).join(' + ');
+  const safe = (s) => s.replace(/[\\/:*?"<>|&]+/g, '').replace(/\s+/g, ' ').trim();
+  const divSlug = activeDivision.size === 0 ? '' : ' ' + [...activeDivision].map(divisionLabel).join(' ');
+  doc.save(safe(`${scopeSlug}${divSlug} Report ${R.from} to ${R.to}.pdf`));
+}
 
 checkExistingSession();
 </script>
